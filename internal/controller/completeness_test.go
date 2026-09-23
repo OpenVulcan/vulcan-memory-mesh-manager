@@ -111,3 +111,31 @@ func TestIncompleteServiceDoesNotExecuteDamagedProgram(t *testing.T) {
 		t.Fatalf("repair did not report safe service boundary: %v", err)
 	}
 }
+
+// TestFailedReinstallRefreshesOpenUI reports the pending marker after a failure occurring before file promotion.
+// TestFailedReinstallRefreshesOpenUI 验证文件推广前的失败也会将未完成标记刷新到已经打开的界面。
+func TestFailedReinstallRefreshesOpenUI(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatal("fixture installation failed")
+		}
+	}
+	if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationStagePackage, Plan: plan})) != tui.OperationEventCompleted {
+		t.Fatal("second package staging failed")
+	}
+	controller.process = &fakeProcess{statusErr: errors.New("cannot verify running process")}
+	events := collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationInstall, Plan: plan})
+	if terminalKind(events) != tui.OperationEventFailed {
+		t.Fatal("failed runtime check reported success")
+	}
+	var snapshot *tui.InstallationSnapshot
+	for _, event := range events {
+		if event.Snapshot != nil {
+			snapshot = event.Snapshot
+		}
+	}
+	if snapshot == nil || snapshot.Installed || !snapshot.Incomplete {
+		t.Fatalf("open UI did not receive failed-install snapshot: %+v", snapshot)
+	}
+}

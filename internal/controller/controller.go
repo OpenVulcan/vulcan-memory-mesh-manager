@@ -659,6 +659,16 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 		c.emit(events, tui.OperationEvent{Kind: tui.OperationEventCompleted, Message: "Operation completed"})
 		return
 	}
+	if request.Kind == tui.OperationInstall {
+		// Refresh after install defers finish so an already-open TUI cannot keep displaying the pre-failure success state.
+		// 安装的延迟收尾完成后刷新，使已经打开的界面不会继续显示失败前的成功状态。
+		inspection, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		snapshot, snapshotErr := c.snapshot(inspection)
+		cancel()
+		if snapshotErr == nil {
+			c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Snapshot: &snapshot})
+		}
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
 		c.emit(events, tui.OperationEvent{Kind: tui.OperationEventCancelled, Message: "Operation cancelled"})
 		return
