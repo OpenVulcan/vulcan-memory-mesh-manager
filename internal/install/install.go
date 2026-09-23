@@ -957,7 +957,9 @@ func validateRequestMetadata(request Request) error {
 	if runtime.GOOS == "windows" && !isWithin(request.Paths.DataRoot, request.StatePath) {
 		return errors.New("state path must be below data root")
 	}
-	if runtime.GOOS != "windows" && request.Service.Name != "" {
+	if runtime.GOOS != "windows" {
+		// All Unix installs keep control state outside service-writable roots so later service changes and uninstall remain safe.
+		// 所有 Unix 安装都将控制状态置于服务可写根之外，确保后续切换服务和卸载仍然安全。
 		if err := validateUnixControlStateLocation(request.StatePath, request.ManagerRoot, request.Paths); err != nil {
 			return err
 		}

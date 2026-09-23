@@ -98,6 +98,20 @@ func TestStagePackageSeparatesDownloadFromFinalCommit(t *testing.T) {
 	}
 }
 
+// TestInstallRejectsUnixControlStateInDataRoot prevents a CLI install from creating state that later service or uninstall operations cannot use.
+// TestInstallRejectsUnixControlStateInDataRoot 防止命令行安装创建后续服务操作或卸载无法安全使用的状态。
+func TestInstallRejectsUnixControlStateInDataRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows keeps registration state below its protected data root")
+	}
+	request, paths, _ := newInstallRequest(t, "")
+	request.ValidateConfig = validConfigValidator(t)
+	request.StatePath = filepath.Join(paths.DataRoot, RegistrationFileName)
+	if _, err := Install(context.Background(), request); err == nil || !strings.Contains(err.Error(), "Unix control state root") {
+		t.Fatalf("install with service-writable control state error = %v", err)
+	}
+}
+
 // TestInstallRejectsInvalidConfigBeforeProgramPromotion verifies fail-closed config validation.
 // TestInstallRejectsInvalidConfigBeforeProgramPromotion 验证配置失败时不会推广程序文件。
 func TestInstallRejectsInvalidConfigBeforeProgramPromotion(t *testing.T) {

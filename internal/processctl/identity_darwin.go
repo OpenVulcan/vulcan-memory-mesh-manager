@@ -20,13 +20,22 @@ func inspectProcess(pid int) (processSnapshot, error) {
 	if pid <= 0 {
 		return processSnapshot{}, ErrIdentityMismatch
 	}
-	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	// The single-record helper maps an empty kernel result to EIO; the slice helper preserves an empty result.
+	// 单记录辅助函数把内核空结果转换为 EIO；切片辅助函数保留可判定的空结果。
+	infos, err := unix.SysctlKinfoProcSlice("kern.proc.pid", pid)
 	if err != nil {
 		if errors.Is(err, unix.ESRCH) {
 			return processSnapshot{}, ErrNotRunning
 		}
 		return processSnapshot{}, ErrIdentityUnverified
 	}
+	if len(infos) == 0 {
+		return processSnapshot{}, ErrNotRunning
+	}
+	if len(infos) != 1 || int(infos[0].Proc.P_pid) != pid {
+		return processSnapshot{}, ErrIdentityUnverified
+	}
+	info := infos[0]
 	// XNU reports SZOMB as 5 while the parent still owns the exited process; argv is no longer available then.
 	// XNU 在父进程尚未回收已退出进程时用状态值 5 表示 SZOMB，此时 argv 已不可读取。
 	if info.Proc.P_stat == 5 {
