@@ -165,6 +165,12 @@ func (m *Model) renderHome() []string {
 	if snapshot.Installed {
 		status = m.text(i18n.KeyStatusInstalled, nil)
 	}
+	if snapshot.Incomplete {
+		status = m.label("安装未完成 / 需要修复", "Installation incomplete / repair required")
+		if snapshot.IntegrityIssue == "service-unverified" || snapshot.IntegrityIssue == "process-unverified" {
+			status = m.label("无法确认安装完整", "Installation could not be verified")
+		}
+	}
 	lines := []string{
 		m.label("已安装管理", "Installed management"),
 		m.label("状态：", "Status: ") + status,
@@ -174,6 +180,9 @@ func (m *Model) renderHome() []string {
 		m.label("配置根：", "Config root: ") + valueOrDash(snapshot.ConfigRoot),
 		m.label("数据根：", "Data root: ") + valueOrDash(snapshot.DataRoot),
 		"",
+	}
+	if snapshot.Incomplete {
+		lines = append(lines, m.label("原因：", "Reason: ")+m.integrityIssueText(snapshot.IntegrityIssue))
 	}
 	for index, item := range []string{
 		m.text(i18n.KeyServiceStart, nil),
@@ -187,10 +196,36 @@ func (m *Model) renderHome() []string {
 		m.text(i18n.KeyDownloadSource, map[string]string{"source": m.sourceLabel(m.selectedSource)}),
 		m.text(i18n.KeyUninstallTitle, nil),
 		m.label("回滚到指定版本", "Roll back to a selected release"),
+		m.label("重新安装 / 修复", "Reinstall / repair"),
 	} {
 		lines = append(lines, m.option(index, item))
 	}
 	return lines
+}
+
+// integrityIssueText explains the bounded completeness result without exposing file contents or credentials.
+// integrityIssueText 将完整性检查的固定原因码转换为用户说明，不暴露文件内容或凭据。
+func (m *Model) integrityIssueText(issue string) string {
+	switch issue {
+	case "installation-not-completed":
+		return m.label("上次安装未完成，请重新安装。", "The previous installation did not finish; reinstall it.")
+	case "missing-program-files":
+		return m.label("程序文件缺失，请重新安装。", "Program files are missing; reinstall them.")
+	case "changed-program-files":
+		return m.label("程序文件校验失败，请重新安装。", "Program file verification failed; reinstall them.")
+	case "unsafe-program-path":
+		return m.label("程序路径不是预期的普通文件或目录，请检查路径。", "Program paths are not the expected regular files or directories; check them.")
+	case "missing-configuration":
+		return m.label("配置文件缺失或无法读取，请先恢复原配置，以保留数据库地址。", "Configuration is missing or unreadable; restore it first to preserve database locations.")
+	case "unregistered-program-files":
+		return m.label("发现程序残留，但没有完成的安装登记，请重新安装。", "Program remnants exist without a completed registration; reinstall.")
+	case "service-unverified":
+		return m.label("无法验证系统服务登记，请检查服务及管理权限。", "The service registration could not be verified; check the service and administrative permissions.")
+	case "process-unverified":
+		return m.label("无法核对受管进程，请检查进程状态及访问权限。", "The managed process could not be checked; inspect its state and access permissions.")
+	default:
+		return m.label("安装登记无法确认，请检查登记与安装目录。", "Installation registration could not be verified; check the registration and installation directories.")
+	}
 }
 
 // renderSource lists exact sources and the custom HTTPS input route.

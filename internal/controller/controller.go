@@ -67,6 +67,9 @@ const (
 )
 
 var (
+	// ErrDamagedServiceControl prevents executing damaged files to manage an existing native service.
+	// ErrDamagedServiceControl 阻止使用损坏文件控制现有系统服务，要求先恢复已验证的程序包。
+	ErrDamagedServiceControl = errors.New("restore the verified VMM package at its registered program root before repairing this service")
 	// ErrRuntimeNotHealthy distinguishes readiness failure from successful process creation.
 	// ErrRuntimeNotHealthy 将就绪失败与进程创建成功区分开。
 	ErrRuntimeNotHealthy = errors.New("VMM runtime did not become healthy")
@@ -794,6 +797,7 @@ func (c *Controller) stagePackage(ctx context.Context, plan tui.InstallPlan, eve
 	}
 	validate := c.validateFunc()
 	prepared, err := install.StagePackage(ctx, install.Request{
+		Repair:      plan.Repair,
 		ManagerRoot: c.options.ManagerRoot, Operation: operation, ManagerVersion: c.options.ManagerVersion, Manifest: releaseResult.Manifest, Artifact: fetched, Package: packageData, Expected: expected,
 		Paths: state.InstallPaths{ProgramRoot: plan.ProgramRoot, ConfigRoot: plan.ConfigRoot, DataRoot: plan.DataRoot}, StatePath: c.options.StatePath,
 		Source: sourceState(plan.Source.Source), Service: serviceStateForPlan(plan, c.options.ServiceName), PATH: emptyPATHState(), ValidateConfig: validate,
@@ -835,6 +839,9 @@ func (c *Controller) pauseInstalledRuntime(ctx context.Context, installed state.
 	}
 	binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
 	if installed.Service.Name != "" {
+		if install.FilesIntact(installed) != "" {
+			return nil, ErrDamagedServiceControl
+		}
 		client, err := c.options.ServiceFactory(binaryPath)
 		if err != nil {
 			return nil, errors.New("existing VMM service control is unavailable")
@@ -1025,6 +1032,13 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 		if err := c.validateStorageTransition(plan, oldState, configFiles[defaultConfigFileName]); err != nil {
 			return err
 		}
+		// Mark the attempt before stopping services or changing credentials so interruption cannot look complete.
+		// 在停止服务或修改凭据之前标记本次尝试，避免中断后仍显示安装完成。
+		pending := oldState
+		pending.InstallationComplete = false
+		if err := state.Save(c.options.StatePath, pending); err != nil {
+			return err
+		}
 	}
 	stopped, err := c.pauseInstalledRuntime(ctx, oldState, oldExists, plan, events)
 	if err != nil {
@@ -1070,12 +1084,14 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 		pathState = oldState.PATH
 	}
 	request := install.Request{ManagerRoot: c.options.ManagerRoot, Operation: prepared.operation, ManagerVersion: c.options.ManagerVersion, Manifest: prepared.release.Manifest, Artifact: prepared.artifact, Package: prepared.packageData, Expected: prepared.expected, Paths: paths, StatePath: c.options.StatePath, Source: sourceState(plan.Source.Source), Service: serviceState, PATH: pathState, ConfigFiles: configFiles, ValidateConfig: c.validateFunc()}
+	request.Repair = plan.Repair
 	c.emitProgress(events, "validate-config", "Validating candidate configuration with VMM")
 	result, err := prepared.prepared.BeginInstall(ctx, request)
 	if err != nil {
 		return errors.New("candidate VMM configuration or installation transaction failed")
 	}
 	pathChanged := false
+	var completedSnapshot *tui.InstallationSnapshot
 	previousPATH, currentPATH := emptyPATHState(), emptyPATHState()
 	defer func() {
 		if !commitCompleted {
@@ -1091,13 +1107,18 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 				c.rollbackPathChange(result.State.Paths, previousPATH, currentPATH)
 			}
 		}
-		if finishErr := result.Finish(commitCompleted); finishErr != nil {
+		if finishErr := result.Finish(commitCompleted, completedSnapshot != nil); finishErr != nil {
 			returnErr = errors.Join(returnErr, finishErr)
 			if !commitCompleted {
 				// Failed file recovery must not restart a process against an uncertain executable tree.
 				// 文件恢复失败后，不能在身份不确定的程序树上重启进程。
 				commitCompleted = true
 			}
+		} else if commitCompleted && completedSnapshot != nil {
+			completedSnapshot.Installed = true
+			completedSnapshot.Incomplete = false
+			completedSnapshot.IntegrityIssue = ""
+			c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Snapshot: completedSnapshot, Progress: tui.Progress{Stage: "install", Message: "VMM installation is ready"}})
 		}
 	}()
 	c.emitProgress(events, "install", "VMM files prepared; reconciling runtime and PATH")
@@ -1127,9 +1148,12 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 	if err != nil {
 		return err
 	}
+	if snapshot.IntegrityIssue != "" && snapshot.IntegrityIssue != "installation-not-completed" {
+		return errors.New("installation verification did not complete")
+	}
 	commitCompleted = true
 	stopped = nil
-	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Snapshot: &snapshot, Progress: tui.Progress{Stage: "install", Message: "VMM installation is ready"}})
+	completedSnapshot = &snapshot
 	return nil
 }
 
@@ -1243,6 +1267,12 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 		return err
 	}
 	binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
+	if request.ServiceAction == tui.ServiceActionStatus {
+		return c.refresh(ctx, events)
+	}
+	if !installed.InstallationComplete && request.ServiceAction != tui.ServiceActionStop && request.ServiceAction != tui.ServiceActionUninstall || install.FilesIntact(installed) != "" {
+		return errors.New("installation is incomplete; reinstall before lifecycle control")
+	}
 	configRoot := installed.Paths.ConfigRoot
 	if request.TargetMode == tui.ServiceModeForeground && installed.Service.Name != "" {
 		return errors.New("registered VMM service must be removed before foreground control")
@@ -1468,6 +1498,9 @@ func (c *Controller) uninstall(ctx context.Context, options tui.UninstallOptions
 		return err
 	}
 	if installed.Service.Name != "" {
+		if install.FilesIntact(installed) != "" {
+			return ErrDamagedServiceControl
+		}
 		if !options.RemoveService {
 			return errors.New("installed VMM service must be removed explicitly before uninstall")
 		}
@@ -1545,6 +1578,9 @@ func (c *Controller) activeConfigTarget() (string, string, error) {
 	installed, err := c.requireState()
 	if err != nil {
 		return "", "", err
+	}
+	if install.FilesIntact(installed) != "" {
+		return "", "", errors.New("installed VMM files failed integrity verification")
 	}
 	return filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath)), installed.Paths.ConfigRoot, nil
 }
@@ -2274,14 +2310,29 @@ func (c *Controller) snapshot(ctx context.Context) (tui.InstallationSnapshot, er
 	snapshot.SourcePrefix = installed.DownloadSource.CustomPrefix
 	if installed.Service.Name != "" {
 		snapshot.ServiceMode = tui.ServiceModeService
+		snapshot.ServiceState = "unverified"
+	}
+	snapshot.IntegrityIssue = install.FilesIntact(installed)
+	snapshot.Incomplete = !installed.InstallationComplete || snapshot.IntegrityIssue != ""
+	snapshot.Installed = !snapshot.Incomplete
+	if snapshot.IntegrityIssue != "" {
+		return snapshot, nil
+	}
+	if !installed.InstallationComplete {
+		snapshot.IntegrityIssue = "installation-not-completed"
+	}
+	if installed.Service.Name != "" {
+		snapshot.ServiceMode = tui.ServiceModeService
 		binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
 		client, err := c.options.ServiceFactory(binaryPath)
 		if err != nil {
-			return tui.InstallationSnapshot{}, errors.New("VMM service status is unavailable")
+			snapshot.Installed, snapshot.Incomplete, snapshot.IntegrityIssue = false, true, "service-unverified"
+			return snapshot, nil
 		}
 		status, err := client.GetStatus(ctx, installed.Service.Name)
 		if err != nil {
-			return tui.InstallationSnapshot{}, errors.New("VMM service status failed")
+			snapshot.Installed, snapshot.Incomplete, snapshot.IntegrityIssue = false, true, "service-unverified"
+			return snapshot, nil
 		}
 		snapshot.ServiceState = status.State
 		snapshot.AutoStart = strings.EqualFold(status.AutoStart, "true") || strings.EqualFold(status.AutoStart, "enabled") || strings.EqualFold(status.StartType, "automatic")
@@ -2293,7 +2344,8 @@ func (c *Controller) snapshot(ctx context.Context) (tui.InstallationSnapshot, er
 		}
 		status, err := c.process.Status(ctx, binaryPath)
 		if err != nil {
-			return tui.InstallationSnapshot{}, errors.New("VMM foreground status failed")
+			snapshot.Installed, snapshot.Incomplete, snapshot.IntegrityIssue = false, true, "process-unverified"
+			return snapshot, nil
 		}
 		snapshot.ServiceState = "foreground"
 		snapshot.Running = status.Running
@@ -2340,6 +2392,9 @@ func (c *Controller) emit(events chan<- tui.OperationEvent, event tui.OperationE
 // safeOperationError converts internal failures to stable user-facing text.
 // safeOperationError 将内部失败转换为稳定的用户可见文本。
 func safeOperationError(err error) string {
+	if errors.Is(err, ErrDamagedServiceControl) {
+		return "Service program files are damaged; stop the service with the operating system and restore the verified package at the original program root before retrying"
+	}
 	if err == nil {
 		return "Operation failed"
 	}
@@ -2633,7 +2688,7 @@ func combinedFlavors(receipt archive.Receipt) []string {
 // planKey creates a stable non-secret identity for the staged package binding.
 // planKey 创建用于暂存包绑定的稳定不含秘密身份。
 func planKey(plan tui.InstallPlan, platformID string) string {
-	return strings.Join([]string{string(plan.Source.Source.ID), plan.Version.Tag, platformID, filepath.Clean(plan.ProgramRoot), filepath.Clean(plan.ConfigRoot), filepath.Clean(plan.DataRoot), strconv.FormatBool(plan.Rollback)}, "\x00")
+	return strings.Join([]string{string(plan.Source.Source.ID), plan.Version.Tag, platformID, filepath.Clean(plan.ProgramRoot), filepath.Clean(plan.ConfigRoot), filepath.Clean(plan.DataRoot), strconv.FormatBool(plan.Rollback), strconv.FormatBool(plan.Repair)}, "\x00")
 }
 
 // readConfigBytes reads one existing config.yaml or returns an empty mapping.

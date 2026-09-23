@@ -422,6 +422,9 @@ type StagedPackage struct {
 // InstallPlan contains all values collected before the final confirmation page.
 // InstallPlan 包含最终确认前收集的全部安装值。
 type InstallPlan struct {
+	// Repair explicitly permits replacing damaged files already owned by the saved installation.
+	// Repair 明确允许替换已有安装登记拥有的损坏程序文件。
+	Repair bool
 	// Rollback permits a deliberately selected older signed runtime release.
 	// Rollback 允许使用用户明确选择的旧版签名运行时发行包。
 	Rollback bool
@@ -472,9 +475,13 @@ type InstallPlan struct {
 // InstallationSnapshot is a non-sensitive summary used by the installed page.
 // InstallationSnapshot 是已安装页面使用的非敏感摘要。
 type InstallationSnapshot struct {
-	// Installed identifies whether a valid manager installation record exists.
-	// Installed 表示是否存在有效的管理器安装记录。
+	// Installed identifies a completed installation whose registered files passed verification.
+	// Installed 表示安装已完成且登记文件通过完整性检查。
 	Installed bool
+	// Incomplete and IntegrityIssue distinguish interrupted or damaged installations from an ordinary stopped runtime.
+	// Incomplete 与 IntegrityIssue 将中断或损坏的安装与正常停止的实例区分开。
+	Incomplete     bool
+	IntegrityIssue string
 	// ManagerVersion is the installed manager release.
 	// ManagerVersion 是已安装的管理器版本。
 	ManagerVersion string

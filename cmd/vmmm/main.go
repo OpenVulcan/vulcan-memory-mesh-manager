@@ -459,7 +459,7 @@ func newRuntime(options commandOptions) (*runtimeContext, error) {
 
 	loaded, installed, err := loadOptionalState(statePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("installation could not be verified: registration is unreadable or invalid: %w", err)
 	}
 	if installed {
 		defaults.ProgramRoot = loaded.Paths.ProgramRoot
@@ -488,6 +488,13 @@ func newRuntime(options commandOptions) (*runtimeContext, error) {
 		return nil, fmt.Errorf("create installation controller: %w", err)
 	}
 	snapshot := snapshotFromState(loaded, installed, identity, statePath)
+	if !installed && install.HasProgramRemnants(defaults.ProgramRoot) {
+		snapshot.Incomplete = true
+		snapshot.IntegrityIssue = "unregistered-program-files"
+		snapshot.ProgramRoot = defaults.ProgramRoot
+		snapshot.ConfigRoot = defaults.ConfigRoot
+		snapshot.DataRoot = defaults.DataRoot
+	}
 	if installed {
 		ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 		liveSnapshot, snapshotErr := controllerValue.Snapshot(ctx)
@@ -1000,6 +1007,10 @@ func runConfigCommand(args []string, options commandOptions, environment command
 		writeError(environment.stderr, errors.New("VMM is not installed; configuration commands are unavailable"))
 		return 1
 	}
+	if issue := install.FilesIntact(runtimeValue.state); issue != "" {
+		writeError(environment.stderr, fmt.Errorf("VMM installation is incomplete (%s); reinstall before running configuration commands", issue))
+		return 1
+	}
 	binaryPath := filepath.Join(runtimeValue.state.Paths.ProgramRoot, filepath.FromSlash(runtimeValue.identity.VMMExecutablePath))
 	bridge, err := configbridge.New(binaryPath, runtimeValue.state.Paths.ConfigRoot)
 	if err != nil {
@@ -1075,6 +1086,22 @@ func runDoctor(options commandOptions, environment commandEnvironment) int {
 		writeError(environment.stderr, errors.New("VMM is not installed"))
 		return 1
 	}
+	result := struct {
+		Installed  bool                          `json:"installed"`
+		Snapshot   tui.InstallationSnapshot      `json:"snapshot"`
+		Validation configbridge.ValidationResult `json:"validation"`
+		Health     configbridge.HealthResult     `json:"health"`
+	}{Installed: runtimeValue.snapshot.Installed, Snapshot: runtimeValue.snapshot}
+	if runtimeValue.snapshot.Incomplete {
+		if options.JSON {
+			if code := encodeJSON(environment.stdout, result); code != 0 {
+				return code
+			}
+		} else {
+			_, _ = fmt.Fprintf(environment.stdout, "installed=false\nincomplete=true\nreason=%s\n", runtimeValue.snapshot.IntegrityIssue)
+		}
+		return 1
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 	validation := configbridge.ValidationResult{}
@@ -1087,12 +1114,7 @@ func runDoctor(options commandOptions, environment commandEnvironment) int {
 		writeError(environment.stderr, err)
 		return 1
 	}
-	result := struct {
-		Installed  bool                          `json:"installed"`
-		Snapshot   tui.InstallationSnapshot      `json:"snapshot"`
-		Validation configbridge.ValidationResult `json:"validation"`
-		Health     configbridge.HealthResult     `json:"health"`
-	}{Installed: runtimeValue.installed, Snapshot: runtimeValue.snapshot, Validation: validation}
+	result.Validation = validation
 	result.Health, err = bridge.Health(ctx)
 	if err != nil {
 		writeError(environment.stderr, err)
@@ -1153,9 +1175,13 @@ func executeControllerOperation(request tui.OperationRequest, options commandOpt
 		return 1
 	}
 	var last tui.OperationEvent
+	var snapshot *tui.InstallationSnapshot
 	terminal := false
 	for event := range events {
 		last = event
+		if event.Snapshot != nil {
+			snapshot = event.Snapshot
+		}
 		if !options.JSON && event.Progress.Message != "" {
 			_, _ = fmt.Fprintln(environment.stderr, event.Progress.Message)
 		}
@@ -1175,17 +1201,27 @@ func executeControllerOperation(request tui.OperationRequest, options commandOpt
 		writeError(environment.stderr, errors.New("operation cancelled"))
 		return 1
 	}
+	// The terminal event carries only the outcome; retain the snapshot delivered by the preceding progress event.
+	// 结束事件只携带操作结果；保留此前进度事件携带的安装快照，供命令行报告完整状态。
+	last.Snapshot = snapshot
+	complete := snapshot == nil || !snapshot.Incomplete
 	if options.JSON {
-		return encodeJSON(environment.stdout, last)
+		if code := encodeJSON(environment.stdout, last); code != 0 {
+			return code
+		}
+		return boolExit(complete)
 	}
 	if last.Snapshot != nil {
 		_, _ = fmt.Fprintf(environment.stdout, "installed=%t\n", last.Snapshot.Installed)
 		_, _ = fmt.Fprintf(environment.stdout, "running=%t\n", last.Snapshot.Running)
 		_, _ = fmt.Fprintf(environment.stdout, "service_mode=%s\n", last.Snapshot.ServiceMode)
+		if last.Snapshot.Incomplete {
+			_, _ = fmt.Fprintf(environment.stdout, "incomplete=true\nreason=%s\n", last.Snapshot.IntegrityIssue)
+		}
 	} else {
 		_, _ = fmt.Fprintln(environment.stdout, nonEmpty(last.Message, "operation completed"))
 	}
-	return 0
+	return boolExit(complete)
 }
 
 // encodeJSON writes one machine-readable value and reports output failures.

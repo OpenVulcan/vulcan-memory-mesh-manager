@@ -109,6 +109,9 @@ type ValidateFunc func(context.Context, string, string) (configbridge.Validation
 // installation is handled by a separate bootstrap/manager transaction.
 // ManagerRoot 仅用于表达边界，本包不会修改它；管理器自身安装由独立引导/管理器事务处理。
 type Request struct {
+	// Repair permits explicit reinstall to replace modified registered program files, never unmanaged files.
+	// Repair 允许明确重新安装时替换已登记但被修改的程序文件，绝不覆盖非受管文件。
+	Repair bool
 	// deferFinalization keeps file backups until the controller reconciles runtime and PATH state.
 	// deferFinalization 在控制器协调运行时与 PATH 状态之前保留文件备份。
 	deferFinalization bool
@@ -178,9 +181,9 @@ type Request struct {
 // Result describes the committed installation and any configuration files changed.
 // Result 描述已经提交的安装结果以及发生变化的配置文件。
 type Result struct {
-	// Finish closes a pending install after runtime reconciliation; false restores files and the previous registration.
-	// Finish 在运行时协调结束后关闭待定安装；false 恢复文件及原安装登记。
-	Finish func(bool) error `json:"-"`
+	// Finish retains or rolls back pending files; complete is true only after all requested actions succeed.
+	// Finish 按 retain 决定保留或回滚待定文件；complete 仅在所有请求动作成功后为 true，返回结束处理错误。
+	Finish func(retain bool, complete bool) error `json:"-"`
 	// State is the atomically persisted registration snapshot.
 	// State 是已经原子持久化的安装登记快照。
 	State state.State
@@ -271,7 +274,7 @@ func StagePackage(ctx context.Context, request Request) (PreparedPackage, error)
 		_ = os.RemoveAll(stageRoot)
 		return PreparedPackage{}, err
 	}
-	if err := validateProgramConflicts(request.Paths.ProgramRoot, oldState, registered, files); err != nil {
+	if err := validateProgramConflicts(request.Paths.ProgramRoot, oldState, registered, files, request.Repair); err != nil {
 		_ = os.RemoveAll(stageRoot)
 		return PreparedPackage{}, err
 	}
@@ -535,7 +538,7 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := validateProgramConflicts(request.Paths.ProgramRoot, oldState, registered, files); err != nil {
+	if err := validateProgramConflicts(request.Paths.ProgramRoot, oldState, registered, files, request.Repair); err != nil {
 		return Result{}, err
 	}
 
@@ -567,6 +570,29 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 
+	// A single incomplete marker survives interruption; no recovery log or automatic replay is maintained.
+	// 单个未完成标记跨中断保留；不维护恢复日志，也不自动重放操作。
+	newState, err := buildState(request, files)
+	if err != nil {
+		return Result{}, err
+	}
+	pending := newState
+	if registered {
+		pending = oldState
+	}
+	pending.InstallationComplete = false
+	if err := saveStateWithPreparation(request.StatePath, request.Paths.DataRoot, pending); err != nil {
+		return Result{}, err
+	}
+	defer func() {
+		if !retained && !transaction.committed && transaction.rollbackErr == nil {
+			if registered {
+				_ = state.Save(request.StatePath, oldState)
+			} else {
+				_ = os.Remove(request.StatePath)
+			}
+		}
+	}()
 	if err := prepareServiceOwnership(request); err != nil {
 		return Result{}, transaction.fail(err)
 	}
@@ -583,10 +609,7 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 		return Result{}, transaction.fail(err)
 	}
 
-	newState, err := buildState(request, files)
-	if err != nil {
-		return Result{}, transaction.fail(err)
-	}
+	newState.InstallationComplete = !request.deferFinalization
 	if err := saveStateWithPreparation(request.StatePath, request.Paths.DataRoot, newState); err != nil {
 		return Result{}, transaction.fail(err)
 	}
@@ -599,14 +622,27 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 	if request.deferFinalization {
 		retained = true
 		finished := false
-		result.Finish = func(commit bool) error {
+		result.Finish = func(commit bool, complete bool) error {
 			if finished {
 				return errors.New("installation has already been finalized")
 			}
 			finished = true
 			if commit {
+				// Completion is the last write, after cleanup; cleanup failure leaves the registration incomplete.
+				// 完成标记是清理之后的最后一次写入；清理失败时登记仍保持未完成。
 				transaction.commit()
-				return transaction.cleanup()
+				if err := transaction.cleanup(); err != nil {
+					return err
+				}
+				current, err := state.Load(request.StatePath)
+				if err != nil {
+					return err
+				}
+				current.InstallationComplete = complete
+				if err := state.Save(request.StatePath, current); err != nil {
+					return err
+				}
+				return nil
 			}
 			if err := transaction.rollback(); err != nil {
 				// Preserve backup directories when a runtime or concurrent edit prevents safe restoration.
@@ -1131,7 +1167,7 @@ func samePreparedRelease(prepared Request, request Request) error {
 	if prepared.Artifact.Path != request.Artifact.Path || prepared.Artifact.Filename != request.Artifact.Filename || prepared.Artifact.Bytes != request.Artifact.Bytes || prepared.Artifact.SHA256 != request.Artifact.SHA256 {
 		return errors.New("final request artifact differs from prepared package")
 	}
-	if prepared.ManagerRoot != request.ManagerRoot || prepared.Expected != request.Expected || prepared.Paths != request.Paths || prepared.Operation != request.Operation {
+	if prepared.ManagerRoot != request.ManagerRoot || prepared.Expected != request.Expected || prepared.Paths != request.Paths || prepared.Operation != request.Operation || prepared.Repair != request.Repair {
 		return errors.New("final request package identity differs from prepared package")
 	}
 	return nil
@@ -1586,7 +1622,7 @@ func inspectPackage(request Request) ([]packageFile, error) {
 
 // validateProgramConflicts prevents unmanaged files from being overwritten.
 // validateProgramConflicts 防止覆盖不属于管理器的现有文件。
-func validateProgramConflicts(programRoot string, old state.State, registered bool, files []packageFile) error {
+func validateProgramConflicts(programRoot string, old state.State, registered bool, files []packageFile, repair bool) error {
 	rootInfo, err := os.Lstat(programRoot)
 	if err == nil && (isUnsafePathEntry(programRoot, rootInfo) || !rootInfo.IsDir()) {
 		return errors.New("program root must be a real directory")
@@ -1631,7 +1667,7 @@ func validateProgramConflicts(programRoot string, old state.State, registered bo
 		if err != nil {
 			return err
 		}
-		if !previousMatches {
+		if !previousMatches && !repair {
 			return fmt.Errorf("%w: existing managed file %q was modified", ErrConflict, item.Relative)
 		}
 	}

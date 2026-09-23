@@ -51,10 +51,14 @@ func TestPendingUpgradeRestoresFilesAndRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	provisional, err := state.Load(request.StatePath)
+	if err != nil || provisional.InstallationComplete {
+		t.Fatal("pending transaction was marked complete")
+	}
 	if data, err := os.ReadFile(binary); err != nil || string(data) != "vmm executable" {
 		t.Fatal("candidate binary was not promoted")
 	}
-	if err := pending.Finish(false); err != nil {
+	if err := pending.Finish(false, false); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(binary); err != nil || string(data) != string(originalBinary) {
@@ -66,6 +70,33 @@ func TestPendingUpgradeRestoresFilesAndRegistration(t *testing.T) {
 	restored, err := state.Load(request.StatePath)
 	if err != nil || !reflect.DeepEqual(restored, previous) {
 		t.Fatal("old registration was not restored")
+	}
+}
+
+// TestRetainingPendingFilesDoesNotImplySuccess distinguishes failed runtime cleanup from a completed install.
+// TestRetainingPendingFilesDoesNotImplySuccess 区分运行时清理失败后保留文件与真正完成安装。
+func TestRetainingPendingFilesDoesNotImplySuccess(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		request, _, _ := newInstallRequest(t, "")
+		request.ValidateConfig = validConfigValidator(t)
+		prepared, err := StagePackage(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pending, err := prepared.BeginInstall(context.Background(), request)
+		if err != nil {
+			prepared.Close()
+			t.Fatal(err)
+		}
+		if err := pending.Finish(true, complete); err != nil {
+			prepared.Close()
+			t.Fatal(err)
+		}
+		prepared.Close()
+		saved, err := state.Load(request.StatePath)
+		if err != nil || saved.InstallationComplete != complete {
+			t.Fatalf("retained install completion=%t, expected %t: %v", saved.InstallationComplete, complete, err)
+		}
 	}
 }
 
@@ -87,7 +118,7 @@ func TestPendingFirstInstallCanAbort(t *testing.T) {
 	if err := os.WriteFile(data, []byte("preserved"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := pending.Finish(false); err != nil {
+	if err := pending.Finish(false, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, removed := range []string{request.StatePath, filepath.Join(paths.ProgramRoot, "bin", vmmExecutableName())} {

@@ -3,11 +3,32 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"charm.land/bubbletea/v2"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/download"
 )
+
+// TestIncompleteHomeOffersReinstall keeps damaged installations out of lifecycle actions and preserves the repair choice through download.
+// TestIncompleteHomeOffersReinstall 阻止损坏安装执行生命周期动作，并将重新安装选择保留到下载阶段。
+func TestIncompleteHomeOffersReinstall(t *testing.T) {
+	controller := &testController{}
+	model := NewModel(ModelConfig{Controller: controller, Language: LanguageChinese, Initial: InstallationSnapshot{Incomplete: true, VMMVersion: "v1.2.3", Storage: StorageNative}})
+	if model.Screen() != ScreenHome || !strings.Contains(model.View().Content, "安装未完成") {
+		t.Fatal("incomplete installation was hidden")
+	}
+	model = update(t, model, press(tea.KeyEnter, ""))
+	if len(controller.requests) != 0 {
+		t.Fatal("incomplete installation reached lifecycle control")
+	}
+	model.cursor = 11
+	model = update(t, model, press(tea.KeyEnter, ""))
+	model = update(t, model, press(tea.KeyEnter, ""))
+	if !model.plan.Repair || model.Screen() != ScreenProviders || len(controller.requests) != 2 || !controller.requests[1].Plan.Repair {
+		t.Fatal("repair intent was lost")
+	}
+}
 
 // TestInstalledConfigureStagesCurrentVersion checks that editing acquires a verified package before configuration.
 // TestInstalledConfigureStagesCurrentVersion 检查编辑已安装配置前会取得当前版本的校验包。

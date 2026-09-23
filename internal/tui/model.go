@@ -250,7 +250,7 @@ func NewModel(config ModelConfig) *Model {
 		snapshot.ServiceMode = ServiceModeForeground
 	}
 	screen := ScreenLanguage
-	if snapshot.Installed {
+	if snapshot.Installed || snapshot.Incomplete {
 		screen = ScreenHome
 	}
 	cursor := 0
@@ -260,7 +260,7 @@ func NewModel(config ModelConfig) *Model {
 	serviceMode := snapshot.ServiceMode
 	autoStart := snapshot.AutoStart
 	addToPath := snapshot.PathEnabled
-	if !snapshot.Installed {
+	if !snapshot.Installed && !snapshot.Incomplete {
 		if config.Defaults.ServiceMode != "" {
 			serviceMode = config.Defaults.ServiceMode
 		}
@@ -293,7 +293,7 @@ func NewModel(config ModelConfig) *Model {
 	}
 	model.plan.Source = model.sourceAt(0)
 	model.selectedSource = model.sourceAt(0)
-	if snapshot.Installed {
+	if snapshot.Installed || snapshot.Incomplete {
 		if snapshot.SourcePrefix != "" {
 			if source, err := download.NewCustomProxy(snapshot.SourcePrefix); err == nil {
 				model.sources = append(model.sources, SourceOption{Source: source, DisplayName: source.Name})
@@ -1476,6 +1476,10 @@ func cloneConfigFields(fields []ConfigField) []ConfigField {
 // activateHomeSelection maps installed actions to controller requests or pages.
 // activateHomeSelection 将已安装操作映射为 Controller 请求或页面。
 func (m *Model) activateHomeSelection() (tea.Model, tea.Cmd) {
+	if m.snapshot.Incomplete && m.cursor != 11 && m.cursor != 1 && m.cursor != 4 && m.cursor != 9 {
+		m.errorMessage = m.label("安装未完成，请选择重新安装 / 修复", "Installation is incomplete; choose Reinstall / repair")
+		return m, nil
+	}
 	switch m.cursor {
 	case 0:
 		return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionStart, TargetMode: m.snapshot.ServiceMode})
@@ -1498,21 +1502,31 @@ func (m *Model) activateHomeSelection() (tea.Model, tea.Cmd) {
 	case 6:
 		return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionDisable, TargetMode: m.snapshot.ServiceMode})
 	case 7:
+		m.plan.Repair = false
 		m.editingInstalled = true
 		m.plan.Rollback = false
 		m.plan.Version = VersionOption{Tag: m.snapshot.VMMVersion, Available: true}
 		m.setScreen(ScreenSource)
 		m.status = m.label("先验证并下载当前版本，再编辑配置", "Verify and download the installed release before editing configuration")
 	case 8:
+		m.plan.Repair = false
 		m.editingInstalled = false
 		m.plan.Rollback = false
 		m.setScreen(ScreenSource)
 	case 9:
 		m.setScreen(ScreenUninstall)
 	case 10:
+		m.plan.Repair = false
 		m.editingInstalled = false
 		m.plan.Rollback = true
 		m.setScreen(ScreenSource)
+	case 11:
+		m.plan.Repair = true
+		m.editingInstalled = m.snapshot.VMMVersion != ""
+		m.plan.Rollback = false
+		m.plan.Version = VersionOption{Tag: m.snapshot.VMMVersion, Available: true}
+		m.setScreen(ScreenSource)
+		m.status = m.label("重新下载签名包并检查配置后安装，保留数据库", "Download the signed package and validate configuration before reinstalling; keep databases")
 	}
 	return m, nil
 }
@@ -1787,6 +1801,8 @@ func (m *Model) routeCompletedOperation() {
 		}
 	case OperationInstall:
 		m.snapshot.Installed = true
+		m.snapshot.Incomplete = false
+		m.snapshot.IntegrityIssue = ""
 		m.snapshot.ConfigRoot = m.plan.ConfigRoot
 		m.snapshot.DataRoot = m.plan.DataRoot
 		m.snapshot.ProgramRoot = m.plan.ProgramRoot
@@ -1838,7 +1854,7 @@ func (m *Model) itemCount() int {
 	case ScreenLanguage:
 		return 2
 	case ScreenHome:
-		return 11
+		return 12
 	case ScreenSource:
 		return len(m.sources) + 1
 	case ScreenVersion:

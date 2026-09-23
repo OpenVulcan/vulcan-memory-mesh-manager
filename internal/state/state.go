@@ -33,6 +33,9 @@ const (
 // The schema deliberately has no API-key, password, or DSN field.
 // 该协议刻意不包含 API Key、密码或 DSN 字段。
 type State struct {
+	// InstallationComplete is set only after all requested installation actions succeed; absence means repair is required.
+	// InstallationComplete 仅在全部请求的安装步骤成功后设置；缺少标记时需要重新安装确认完整性。
+	InstallationComplete bool `json:"installation_complete"`
 	// ProtocolVersion identifies the persisted JSON protocol.
 	// ProtocolVersion 标识持久化 JSON 协议版本。
 	ProtocolVersion int `json:"protocol_version"`
