@@ -241,7 +241,7 @@ func TestStageValidateCommitAndCredentialApply(t *testing.T) {
 	if !bytes.Contains(credentialBytes, []byte("provider-secret-value")) {
 		t.Fatal("provider credential was not written to .env")
 	}
-	installed, err := state.Load(filepath.Join(plan.DataRoot, "vmmm-state.json"))
+	installed, err := state.Load(controller.options.StatePath)
 	if err != nil {
 		t.Fatalf("state.Load() error = %v", err)
 	}
@@ -303,14 +303,16 @@ func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
 		PATH:            state.PATHState{Owner: state.PATHOwnerNone, Scope: state.PATHScopeNone, Entries: []string{}},
 		ManagedFiles:    []state.ManagedFile{},
 	}
-	if err := state.Save(filepath.Join(plan.DataRoot, "vmmm-state.json"), installed); err != nil {
+	if err := os.MkdirAll(filepath.Dir(controller.options.StatePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Save(controller.options.StatePath, installed); err != nil {
 		t.Fatal(err)
 	}
 	serviceAdapter := &fakeService{status: service.Status{State: "running", AutoStart: "true"}}
 	pathAdapter := &fakePath{}
 	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return serviceAdapter, nil }
 	controller.options.PathFactory = func() PathClient { return pathAdapter }
-	controller.options.StatePath = filepath.Join(plan.DataRoot, "vmmm-state.json")
 	controller.options.ManagerRoot = plan.ProgramRoot
 
 	serviceEvents := collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationService, TargetMode: tui.ServiceModeService, ServiceAction: tui.ServiceActionInstall, Plan: tui.InstallPlan{AutoStart: true, ServiceUser: currentServiceUser(t)}})
@@ -1075,10 +1077,16 @@ func newFixtureController(t *testing.T) (*Controller, tui.InstallPlan, fixturePa
 		ServiceMode: tui.ServiceModeForeground,
 	}
 	publicKey := ed25519.NewKeyFromSeed(testSeed(7)).Public().(ed25519.PublicKey)
+	statePath := filepath.Join(base, "control", "vmmm-state.json")
+	if runtime.GOOS == "windows" {
+		// Windows retains registration under the protected data root, unlike Unix control state.
+		// Windows 的注册状态仍放在受保护的数据根内，与 Unix 控制状态不同。
+		statePath = filepath.Join(base, "data", "vmmm-state.json")
+	}
 	options := Options{
 		ManagerVersion:        "vmmm-test",
 		ManagerRoot:           filepath.Join(base, "manager"),
-		StatePath:             filepath.Join(base, "data", "vmmm-state.json"),
+		StatePath:             statePath,
 		CacheRoot:             filepath.Join(base, "cache"),
 		TrustKeys:             map[string]ed25519.PublicKey{"test": publicKey},
 		Identity:              fixture.identity,
