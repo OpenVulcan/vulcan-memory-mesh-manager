@@ -72,6 +72,10 @@ var (
 type ScalarType string
 
 const (
+	// ScalarNull emits an explicit YAML null instead of an empty string or zero.
+	// ScalarNull 输出显式 YAML 空值，不将其混同为空字符串或零。
+	ScalarNull ScalarType = "null"
+
 	// ScalarString emits a quoted YAML string.
 	// ScalarString 输出带引号的 YAML 字符串。
 	ScalarString ScalarType = "string"
@@ -418,6 +422,11 @@ func parseSingleDocument(data []byte) (*yaml.Node, error) {
 func makeScalar(scalarType ScalarType, value string) (*yaml.Node, error) {
 	node := &yaml.Node{Kind: yaml.ScalarNode}
 	switch scalarType {
+	case ScalarNull:
+		if value != "null" {
+			return nil, errors.New("explicit null requires the canonical null token")
+		}
+		node.Tag, node.Value = "!!null", "null"
 	case ScalarString:
 		node.Tag = "!!str"
 		node.Value = value

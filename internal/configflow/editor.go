@@ -153,6 +153,27 @@ func (e *Editor) SetScalar(path, value string) error {
 	return nil
 }
 
+// SetNull clears a nullable scalar declared by the runtime schema; it never guesses null support from the input text.
+// SetNull 仅清空运行时 schema 声明可为空的标量；不根据输入文本猜测空值支持，返回校验或写入错误。
+func (e *Editor) SetNull(path string) error {
+	field, err := e.field(path)
+	if err != nil {
+		return err
+	}
+	if !field.Nullable {
+		return fmt.Errorf("configuration field %q does not accept null", path)
+	}
+	switch field.Type {
+	case "string", "boolean", "integer", "number", "duration":
+		if err := e.draft.Set(path, configedit.ScalarNull, "null"); err != nil {
+			return fmt.Errorf("configuration field %q could not be cleared", path)
+		}
+		return nil
+	default:
+		return fmt.Errorf("configuration field %q is not a nullable scalar", path)
+	}
+}
+
 // SetStructured replaces one known mapping or array without discarding unrelated YAML nodes.
 // SetStructured 替换一个已知映射或数组，同时保留无关 YAML 节点。
 func (e *Editor) SetStructured(path string, yamlBytes []byte) error {

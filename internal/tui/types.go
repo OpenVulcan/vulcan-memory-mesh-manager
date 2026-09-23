@@ -552,6 +552,9 @@ type ValidationSummary struct {
 // ConfigField describes one optional advanced configuration field.
 // ConfigField 描述一个可选的高级配置字段。
 type ConfigField struct {
+	// Nullable is authoritative scalar metadata; Null records an explicit YAML null independently of the text value.
+	// Nullable 是权威标量元数据；Null 独立于文本值记录显式 YAML 空值。
+	Nullable, Null bool
 	// RuleAsset marks a complete prompt or rule file beneath the VMM override root.
 	// RuleAsset 表示 VMM 覆盖根下的完整提示词或规则文件。
 	RuleAsset bool

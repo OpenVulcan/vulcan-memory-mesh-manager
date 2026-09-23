@@ -516,6 +516,7 @@ func (m *Model) renderFieldEdit() []string {
 		m.label("高级配置字段", "Advanced configuration fields"),
 		m.label("只写入可编辑字段；未知字段和只读字段不会被猜测修改。", "Only editable fields are written; unknown and read-only fields are never guessed."),
 		m.label("Ctrl+O 换行，Ctrl+U 清空，Enter 暂存当前字段或规则文件。", "Ctrl+O inserts a newline, Ctrl+U clears, Enter stages the field or rule file."),
+		m.label("可为空的标量按 Ctrl+N 设为 null；数值 0 与 null 不同。", "Ctrl+N sets a nullable scalar to null; zero and null are distinct."),
 		m.label("敏感字段只接受 ${环境变量名} 引用，列表不会显示原值。", "Sensitive fields accept only ${ENV_NAME} references; existing values stay hidden."),
 	}
 	for index, field := range m.configFields.Fields {
@@ -527,6 +528,9 @@ func (m *Model) renderFieldEdit() []string {
 		state := m.label("只读", "read-only")
 		if field.Editable {
 			state = m.label("可编辑", "editable")
+		}
+		if field.Nullable {
+			state += m.label("，可为空", ", nullable")
 		}
 		enumHint := ""
 		if len(field.Enum) > 0 {

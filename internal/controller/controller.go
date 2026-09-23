@@ -1739,6 +1739,7 @@ func overlayConfigFields(authoritative []tui.ConfigField, edited []tui.ConfigFie
 			continue
 		}
 		authoritative[index].Value = field.Value
+		authoritative[index].Null = field.Null
 		authoritative[index].Changed = true
 	}
 	return authoritative
@@ -1750,12 +1751,12 @@ func configFieldsChanged(current []tui.ConfigField, previous []tui.ConfigField) 
 	if len(previous) == 0 {
 		return false
 	}
-	values := make(map[string]string, len(previous))
+	values := make(map[string]tui.ConfigField, len(previous))
 	for _, field := range previous {
-		values[field.Path] = field.Value
+		values[field.Path] = field
 	}
 	for _, field := range current {
-		if value, ok := values[field.Path]; ok && value != field.Value {
+		if value, ok := values[field.Path]; ok && (value.Value != field.Value || value.Null != field.Null) {
 			return true
 		}
 	}
@@ -1878,6 +1879,9 @@ func setEditorField(editor *configflow.Editor, schema configbridge.Schema, field
 	for _, item := range schema.Fields {
 		if item.Path != schemaPathForConcrete(field.Path) {
 			continue
+		}
+		if field.Null {
+			return editor.SetNull(field.Path)
 		}
 		if item.Sensitive {
 			if err := validateSensitiveReference(item.Type, field.Value); err != nil {
@@ -2008,6 +2012,7 @@ func displayFields(schema configbridge.Schema, configBytes []byte, prefix string
 		}
 		sensitive := item.Sensitive || hasSensitiveDescendant(schema.Fields, schemaPathForConcrete(item.Path))
 		value := ""
+		isNull := false
 		switch item.Type {
 		case "object", "array", "map":
 			kind := configedit.StructuredObject
@@ -2024,6 +2029,10 @@ func displayFields(schema configbridge.Schema, configBytes []byte, prefix string
 			scalar, readErr := draft.Get(item.Path)
 			if readErr == nil {
 				value = scalar.Value
+				isNull = scalar.Tag == "!!null"
+				if isNull {
+					value = "null"
+				}
 			} else if !errors.Is(readErr, configedit.ErrNotFound) && !(errors.Is(readErr, configedit.ErrNotScalar) && (item.Type == "any" || item.Type == "unknown")) {
 				return nil, fmt.Errorf("read configuration field %q: %w", item.Path, readErr)
 			}
@@ -2032,7 +2041,7 @@ func displayFields(schema configbridge.Schema, configBytes []byte, prefix string
 			value = "<configured>"
 		}
 		editable := item.Type != "any" && item.Type != "unknown"
-		fields = append(fields, tui.ConfigField{Path: item.Path, Type: item.Type, Value: value, Sensitive: sensitive, Editable: editable, Enum: append([]string(nil), item.Enum...)})
+		fields = append(fields, tui.ConfigField{Path: item.Path, Type: item.Type, Value: value, Nullable: item.Nullable, Null: isNull, Sensitive: sensitive, Editable: editable, Enum: append([]string(nil), item.Enum...)})
 	}
 	return fields, nil
 }

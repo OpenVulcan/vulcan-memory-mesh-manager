@@ -12,6 +12,7 @@ import (
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configbridge"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configedit"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configflow"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/tui"
 )
 
@@ -115,5 +116,29 @@ func TestCandidateWithRealVMM(t *testing.T) {
 	health, err := client.Health(context.Background())
 	if err != nil || health.Class != "unreachable" {
 		t.Fatalf("real health protocol: %+v, %v", health, err)
+	}
+	// Exercise a real optional runtime field against the exported schema and the same authoritative loader.
+	// 使用真实可选运行时字段，贯通导出 schema 与相同权威加载器的空值校验。
+	schema, err := client.Schema(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor, err := configflow.New(schema, configBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := editor.SetNull("memory_pipeline.min_similarity_score"); err != nil {
+		t.Fatal(err)
+	}
+	nullConfig, err := editor.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, nullConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nullValidation, err := client.Validate(context.Background())
+	if err != nil || !nullValidation.Valid {
+		t.Fatalf("real runtime rejected nullable scalar: %+v %v", nullValidation, err)
 	}
 }

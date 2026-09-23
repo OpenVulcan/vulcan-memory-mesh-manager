@@ -458,6 +458,10 @@ func (m *Model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.screen == ScreenFieldEdit && keyMatches(message, "ctrl+n") {
+		m.clearNullableField()
+		return m, nil
+	}
 	if m.isTextInput() {
 		return m.updateTextInput(message)
 	}
@@ -650,6 +654,7 @@ func (m *Model) activateTextInput() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		field.Value = value
+		field.Null = false
 		field.Changed = true
 		m.configFields.Changed = true
 		m.editingField = -1
