@@ -11,11 +11,57 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configbridge"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configedit"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configflow"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/install"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/state"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/tui"
 )
+
+// TestProviderWizardPreservesUnrelatedAdvancedFields keeps throughput and ranking settings when a quick provider choice changes.
+// TestProviderWizardPreservesUnrelatedAdvancedFields 验证快速切换供应商时保留无关的吞吐与排序高级设置。
+func TestProviderWizardPreservesUnrelatedAdvancedFields(t *testing.T) {
+	schema := testSchema()
+	schema.Fields = append(schema.Fields,
+		configbridge.Field{Path: "embedding.provider", Type: "string"},
+		configbridge.Field{Path: "embedding.endpoint", Type: "string"},
+		configbridge.Field{Path: "embedding.api_keys", Type: "array", Sensitive: true},
+		configbridge.Field{Path: "embedding.model", Type: "string"},
+		configbridge.Field{Path: "embedding.dimension", Type: "integer"},
+		configbridge.Field{Path: "embedding.rpm", Type: "integer"},
+		configbridge.Field{Path: "embedding.max_batch_size", Type: "integer"},
+		configbridge.Field{Path: "rerank.enabled", Type: "boolean"},
+		configbridge.Field{Path: "rerank.routes", Type: "array"},
+		configbridge.Field{Path: "rerank.top_n", Type: "integer"},
+	)
+	before := []byte("embedding:\n  provider: openai\n  endpoint: https://old.example/v1\n  api_keys: [\"${OLD_KEY}\"]\n  model: old-model\n  dimension: 1024\n  rpm: 37\n  max_batch_size: 7\nrerank:\n  enabled: true\n  top_n: 14\n  routes:\n    - name: existing\n")
+	editor, err := configflow.New(schema, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := tui.ProviderPlan{Embedding: &tui.ProviderRoute{Provider: "google_ai_studio", Model: "gemini-embedding-001", Dimension: 768, APIKeyEnvironmentNames: []string{"NEW_KEY"}}, RerankConfigured: true}
+	if err := applyProviderPlan(editor, plan); err != nil {
+		t.Fatal(err)
+	}
+	after, err := editor.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := configedit.Parse(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"embedding.provider": "google_ai_studio", "embedding.endpoint": "", "embedding.model": "gemini-embedding-001", "embedding.dimension": "768", "embedding.rpm": "37", "embedding.max_batch_size": "7", "rerank.enabled": "false", "rerank.top_n": "14", "rerank.routes[0].name": "existing"} {
+		value, err := draft.Get(path)
+		if err != nil || value.Value != want {
+			t.Fatalf("%s = %+v, %v; want %q", path, value, err, want)
+		}
+	}
+	if !bytes.Contains(after, []byte("${NEW_KEY}")) || bytes.Contains(after, []byte("${OLD_KEY}")) {
+		t.Fatal("embedding API key references were not replaced")
+	}
+}
 
 // TestInstalledConfigurationPreservesCustomPaths ensures reopening the editor does not replace saved paths with defaults.
 // TestInstalledConfigurationPreservesCustomPaths 确保重新打开编辑器不会把已保存路径替换为默认值。

@@ -396,3 +396,10 @@ VMM 提交 `efd6027` 对应的原生持续集成已在五个平台全部通过�
 2. 文件变更：修改 `internal/controller/controller.go`、`internal/controller/completeness_test.go`、`internal/controller/effective.go`、`internal/controller/provider_test_operation.go`、`internal/controller/validation_saved.go`、`internal/state/state.go` 与本计划；无新增或删除文件。
 3. 关键逻辑：普通文字进度继续使用非阻塞投递，携带快照、安装包、校验、来源、版本或诊断信息的事件以及终止事件在缓冲区已满时让出最早的一个位置，再关闭事件流。回归测试预先填满十六个事件槽，分别运行成功、失败和取消操作，确认每次恰好收到对应终止事件，成功刷新还必须带回安装快照。修正数据根目录注释，明确安装登记位于独立控制状态根目录。
 4. 验证与边界：使用真实 VMM 标准布局的本机 Go 1.25.0 全量四百一十一项测试、`go vet ./...` 及差异检查通过；五平台原生持续集成待提交后复验。Certum 证书仍在办理，正式发行保持草稿门禁。
+
+### 供应商快捷配置与高级字段保留复审
+
+1. 核心调整：按 VMM `EmbeddingConfig` 与 `RerankConfig` 的真实字段结构复核发现，快捷向导替换整个 `embedding` 或 `rerank` YAML 段会删除用户在高级编辑器设置的额度、批大小、节点、密钥故障转移或 `top_n`。现限定快捷向导只写它负责的字段；连续无问题审核计数重新归零。
+2. 文件变更：修改 `internal/controller/controller.go`、`internal/controller/installed_config_test.go`、`internal/controller/validator_integration_test.go`、`internal/tui/view.go`、`README.md` 与本计划；无新增或删除文件。
+3. 关键逻辑：Embedding 只更新供应商、端点、模型、维度和已验证的密钥变量引用；省略的端点明确清空，以免沿用旧供应商 URL。重排只更新启用开关，并且仅在选择新路由时替换路由列表；`top_n` 保留。LLM 路由替换仍由向导明确告知。回归测试先用原实现复现旧端点和高级字段丢失，再验证新配置保留吞吐、批大小、重排路由及 `top_n`，同时正确更新密钥引用。真实 VMM 集成测试改用真实二进制导出的 schema，测试提前失败时也释放暂存锁。
+4. 验证与边界：新增回归测试在修复前失败、修复后通过；修正后的真实 VMM 集成测试及使用标准布局真实二进制执行的本机全量四百一十二项管理器 Go 测试通过，`go vet ./...` 与差异检查通过。五平台持续集成待提交后复验。Certum 正式发行门禁继续保留。

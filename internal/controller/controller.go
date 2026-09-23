@@ -3515,30 +3515,84 @@ func applyProviderPlan(editor *configflow.Editor, plan tui.ProviderPlan) error {
 	root := document.Content[0]
 	for index := 0; index+1 < len(root.Content); index += 2 {
 		key := root.Content[index].Value
-		path := ""
+		value := root.Content[index+1]
 		switch key {
 		case "llm":
-			path = "llm.routes"
-		case "embedding":
-			path = "embedding"
-		case "rerank":
-			path = "rerank"
-		default:
-			return errors.New("provider configuration contains an unsupported section")
-		}
-		value := root.Content[index+1]
-		if key == "llm" {
 			value = mappingValue(value, "routes")
 			if value == nil {
 				return errors.New("provider configuration is incomplete")
 			}
+			fragment, err := encodeYAMLNode(value)
+			if err != nil || editor.SetStructured("llm.routes", fragment) != nil {
+				return errors.New("provider configuration is not accepted by the VMM schema")
+			}
+		case "embedding":
+			if err := applyEmbeddingProviderPatch(editor, value); err != nil {
+				return err
+			}
+		case "rerank":
+			if err := applyRerankProviderPatch(editor, value); err != nil {
+				return err
+			}
+		default:
+			return errors.New("provider configuration contains an unsupported section")
 		}
-		fragment, err := encodeYAMLNode(value)
-		if err != nil {
-			return errors.New("provider configuration patch is invalid")
+	}
+	return nil
+}
+
+// applyEmbeddingProviderPatch changes only the wizard-owned identity and key fields, retaining independent VMM throughput settings.
+// applyEmbeddingProviderPatch 仅修改向导负责的供应商身份与密钥字段，保留独立的 VMM 吞吐设置。
+func applyEmbeddingProviderPatch(editor *configflow.Editor, mapping *yaml.Node) error {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return errors.New("embedding provider patch is invalid")
+	}
+	// The signed VMM schema owns these exact fields; clearing an omitted endpoint prevents reuse of the previous provider's URL.
+	// 已签名 VMM schema 拥有这些精确字段；清空省略的端点可防止沿用上一个供应商的地址。
+	for _, name := range []string{"provider", "model", "dimension"} {
+		value := mappingValue(mapping, name)
+		if value == nil || value.Kind != yaml.ScalarNode || editor.SetScalar("embedding."+name, value.Value) != nil {
+			return errors.New("embedding provider patch is not accepted by the VMM schema")
 		}
-		if err := editor.SetStructured(path, fragment); err != nil {
-			return errors.New("provider configuration is not accepted by the VMM schema")
+	}
+	endpoint := ""
+	if value := mappingValue(mapping, "endpoint"); value != nil {
+		if value.Kind != yaml.ScalarNode {
+			return errors.New("embedding endpoint patch is invalid")
+		}
+		endpoint = value.Value
+	}
+	if err := editor.SetScalar("embedding.endpoint", endpoint); err != nil {
+		return errors.New("embedding endpoint patch is not accepted by the VMM schema")
+	}
+	keys := mappingValue(mapping, "api_keys")
+	if keys == nil || keys.Kind != yaml.SequenceNode {
+		return errors.New("embedding API key references are missing")
+	}
+	fragment, err := encodeYAMLNode(keys)
+	if err != nil || validateSensitiveReference("array", string(fragment)) != nil || editor.SetStructured("embedding.api_keys", fragment) != nil {
+		return errors.New("embedding API key references are invalid")
+	}
+	return nil
+}
+
+// applyRerankProviderPatch updates the wizard switch and optional routes without discarding the independent top-N setting.
+// applyRerankProviderPatch 更新向导开关和可选路由，同时保留独立的 top-N 设置。
+func applyRerankProviderPatch(editor *configflow.Editor, mapping *yaml.Node) error {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return errors.New("rerank provider patch is invalid")
+	}
+	enabled := mappingValue(mapping, "enabled")
+	if enabled == nil || enabled.Kind != yaml.ScalarNode || editor.SetScalar("rerank.enabled", enabled.Value) != nil {
+		return errors.New("rerank switch is not accepted by the VMM schema")
+	}
+	if routes := mappingValue(mapping, "routes"); routes != nil {
+		if routes.Kind != yaml.SequenceNode {
+			return errors.New("rerank route patch is invalid")
+		}
+		fragment, err := encodeYAMLNode(routes)
+		if err != nil || editor.SetStructured("rerank.routes", fragment) != nil {
+			return errors.New("rerank routes are not accepted by the VMM schema")
 		}
 	}
 	return nil

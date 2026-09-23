@@ -441,10 +441,19 @@ func (m *Model) renderProviderWizard() []string {
 	if name == "" {
 		name = m.providerDraft.Provider
 	}
+	// Describe the exact scope of the selected wizard so users can review which advanced fields survive the save.
+	// 按当前向导说明实际修改范围，方便用户确认哪些高级字段会在保存后继续保留。
+	notice := m.label("保存会以单条路由替换 LLM 路由列表；复杂路由请使用高级编辑器。", "Saving replaces the LLM route list with one route; use the advanced editor for complex routing.")
+	switch m.providerPurpose {
+	case ProviderPurposeEmbedding:
+		notice = m.label("保存仅更新 Embedding 供应商、端点、模型、维度和密钥；吞吐与节点设置保留。", "Saving updates only the embedding provider, endpoint, model, dimension, and keys; throughput and node settings stay.")
+	case ProviderPurposeRerank:
+		notice = m.label("保存更新重排开关；选择新路由时替换路由列表，top_n 保留。复杂路由请使用高级编辑器。", "Saving updates rerank enablement; selecting a new route replaces the route list. top_n stays. Use the advanced editor for complex routing.")
+	}
 	lines := []string{
 		m.label("供应商快捷配置", "Provider quick setup"),
 		m.label("供应商：", "Provider: ") + name + " [" + m.providerDraft.Provider + "]",
-		m.label("保存将替换此用途的完整配置；LLM/重排将使用单条路由。保留多路由或节点配置请返回高级编辑器。", "Saving replaces this purpose's configuration; LLM/rerank will use a single route. Use the advanced editor to preserve multiple routes or nodes."),
+		notice,
 	}
 	if metadata.DimensionHint != "" && m.providerPurpose == ProviderPurposeEmbedding {
 		lines = append(lines, m.label("维度提示：", "Dimension hint: ")+metadata.DimensionHint)

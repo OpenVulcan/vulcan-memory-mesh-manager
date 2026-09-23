@@ -56,6 +56,16 @@ func TestCandidateWithRealVMM(t *testing.T) {
 		}
 	}
 	controller, plan, _ := newFixtureController(t)
+	defer controller.discardStaged()
+	// Use the copied real binary for both schema and validation so the test follows the same authoritative field contract as installation.
+	// 模式清单与配置校验都使用复制出的真实程序，使测试遵循安装时同一份权威字段契约。
+	controller.options.Schema = func(ctx context.Context, _ string, configRoot string) (configbridge.Schema, error) {
+		client, err := configbridge.New(binaryPath, configRoot)
+		if err != nil {
+			return configbridge.Schema{}, err
+		}
+		return client.Schema(ctx)
+	}
 	controller.options.Validate = func(ctx context.Context, _ string, candidate string) (configbridge.ValidationResult, error) {
 		client, err := configbridge.New(binaryPath, candidate)
 		if err != nil {
