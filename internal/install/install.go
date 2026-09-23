@@ -196,7 +196,7 @@ type Result struct {
 // PreparedPackage 是在下载完成与最终确认之间保留的已校验程序包句柄。
 //
 // It owns a private re-extracted package tree; Close removes that tree and invalidates the handle.
-// 它不拥有调用方的压缩包暂存树；Close 只会使句柄失效。
+// 它拥有私有的重新解包目录；Close 删除该目录并使句柄失效，但不删除调用方的压缩包。
 type PreparedPackage struct {
 	// request is the immutable release and path identity checked during staging.
 	// request 是暂存阶段校验过的不可变发行版本和路径身份。
@@ -391,7 +391,7 @@ func (prepared *PreparedPackage) CommitInstall(ctx context.Context, request Requ
 }
 
 // Close removes the private extracted package and invalidates the prepared handle.
-// Close 使已准备程序包句柄失效，但不会删除调用方拥有的暂存文件。
+// Close 删除私有解包目录并使已准备句柄失效，但不会删除调用方拥有的压缩包。
 func (prepared *PreparedPackage) Close() {
 	if prepared != nil {
 		if prepared.stageRoot != "" {
