@@ -1119,8 +1119,14 @@ func (f *fakePath) Remove(pathctl.Record) error {
 // newFixtureController 构造带真实签名压缩包和确定性适配器的 controller。
 func newFixtureController(t *testing.T) (*Controller, tui.InstallPlan, fixturePackage) {
 	t.Helper()
+	return newFixtureControllerAt(t, fixtureInstallBase(t))
+}
+
+// newFixtureControllerAt binds the authenticated package fixture to an explicit installation parent.
+// newFixtureControllerAt 将已认证安装包夹具绑定到明确的安装父目录，供不同账户权限测试使用。
+func newFixtureControllerAt(t *testing.T, base string) (*Controller, tui.InstallPlan, fixturePackage) {
+	t.Helper()
 	fixture := newFixturePackage(t)
-	base := fixtureInstallBase(t)
 	plan := tui.InstallPlan{
 		Source:      tui.SourceOption{Source: download.DefaultSources()[0], Available: true},
 		Version:     tui.VersionOption{Tag: fixture.tag, Commit: fixture.commit, Available: true},
