@@ -53,7 +53,7 @@ func TestDisplayFieldsLoadsStructuredValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fields) != 5 || fields[0].Value != "<configured>" || !fields[0].Sensitive || fields[0].Editable || fields[1].Path != "llm.routes[0].model" || fields[1].Value != "chat-1" || fields[2].Value != "<configured>" || !fields[2].Sensitive || !fields[2].Editable || !strings.Contains(fields[3].Value, "dimensions: 3") {
+	if len(fields) != 5 || fields[0].Value != "<configured>" || !fields[0].Sensitive || !fields[0].Editable || fields[1].Path != "llm.routes[0].model" || fields[1].Value != "chat-1" || fields[2].Value != "<configured>" || !fields[2].Sensitive || !fields[2].Editable || !strings.Contains(fields[3].Value, "dimensions: 3") {
 		t.Fatalf("structured fields were not loaded: %+v", fields)
 	}
 	if fields[4].Value != "<configured>" || !fields[4].Editable {

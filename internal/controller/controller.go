@@ -1769,12 +1769,59 @@ func setEditorField(editor *configflow.Editor, schema configbridge.Schema, field
 			if err := editor.SetStructured(field.Path, []byte(field.Value)); err != nil {
 				return errors.New("structured configuration field could not be changed")
 			}
+			if hasSensitiveDescendant(schema.Fields, item.Path) {
+				if err := validateStructuredSecrets(editor, schema, field.Path); err != nil {
+					return err
+				}
+			}
 			return nil
 		default:
 			return errors.New("configuration field type is not editable")
 		}
 	}
 	return errors.New("configuration field is absent from the VMM schema")
+}
+
+// validateStructuredSecrets checks sensitive descendants after a collection edit, allowing only environment references in the changed subtree.
+// validateStructuredSecrets 在集合编辑后检查敏感子字段，仅允许被修改子树中的敏感值使用环境变量引用。
+func validateStructuredSecrets(editor *configflow.Editor, schema configbridge.Schema, parent string) error {
+	rendered, err := editor.Render()
+	if err != nil {
+		return errors.New("structured configuration could not be checked")
+	}
+	draft, err := configedit.Parse(rendered)
+	if err != nil {
+		return errors.New("structured configuration could not be checked")
+	}
+	for _, field := range schema.Fields {
+		if !field.Sensitive {
+			continue
+		}
+		paths, err := expandSchemaPath(draft, field.Path)
+		if err != nil {
+			return errors.New("sensitive configuration paths could not be checked")
+		}
+		for _, path := range paths {
+			if !strings.HasPrefix(path, parent+".") && !strings.HasPrefix(path, parent+"[") {
+				continue
+			}
+			value := ""
+			if field.Type == "array" {
+				value, err = draft.GetStructured(path, configedit.StructuredArray)
+			} else {
+				var scalar configedit.Scalar
+				scalar, err = draft.Get(path)
+				value = scalar.Value
+			}
+			if errors.Is(err, configedit.ErrNotFound) {
+				continue
+			}
+			if err != nil || validateSensitiveReference(field.Type, value) != nil {
+				return errors.New("sensitive fields inside collections require environment references")
+			}
+		}
+	}
+	return nil
 }
 
 // validateSensitiveReference requires edited secrets to remain environment references in YAML.
@@ -1856,7 +1903,7 @@ func displayFields(schema configbridge.Schema, configBytes []byte, prefix string
 		if sensitive && value != "" {
 			value = "<configured>"
 		}
-		editable := !hasSensitiveDescendant(schema.Fields, schemaPathForConcrete(item.Path)) && item.Type != "any" && item.Type != "unknown"
+		editable := item.Type != "any" && item.Type != "unknown"
 		fields = append(fields, tui.ConfigField{Path: item.Path, Type: item.Type, Value: value, Sensitive: sensitive, Editable: editable, Enum: append([]string(nil), item.Enum...)})
 	}
 	return fields, nil

@@ -368,6 +368,7 @@ func (m *Model) renderProviderWizard() []string {
 	lines := []string{
 		m.label("供应商快捷配置", "Provider quick setup"),
 		m.label("供应商：", "Provider: ") + name + " [" + m.providerDraft.Provider + "]",
+		m.label("保存将替换此用途的完整配置；LLM/重排将使用单条路由。保留多路由或节点配置请返回高级编辑器。", "Saving replaces this purpose's configuration; LLM/rerank will use a single route. Use the advanced editor to preserve multiple routes or nodes."),
 	}
 	if metadata.DimensionHint != "" && m.providerPurpose == ProviderPurposeEmbedding {
 		lines = append(lines, m.label("维度提示：", "Dimension hint: ")+metadata.DimensionHint)
