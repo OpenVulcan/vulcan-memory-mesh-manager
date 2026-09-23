@@ -783,8 +783,6 @@ func (c *Controller) stagePackage(ctx context.Context, plan tui.InstallPlan, eve
 	return nil
 }
 
-// install builds a candidate configuration, validates it with the staged binary, and commits after confirmation.
-// install 使用暂存二进制构造候选配置，经真实校验后在确认阶段提交。
 // pauseInstalledRuntime stops a verified running service or foreground process before package replacement.
 // pauseInstalledRuntime 在替换程序包前停止已验证且正在运行的服务或前台进程。
 //
@@ -955,6 +953,8 @@ func (c *Controller) startInstalledRuntime(ctx context.Context, plan tui.Install
 	return nil
 }
 
+// install builds a candidate configuration, validates it with the staged binary, and commits after confirmation.
+// install 使用暂存二进制构造候选配置，经真实校验后在确认阶段提交。
 func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent) error {
 	prepared, err := c.matchStaged(plan)
 	if err != nil {
@@ -1945,14 +1945,14 @@ func (c *Controller) applyPath(plan tui.InstallPlan, paths state.InstallPaths, p
 	return record.Path, nil
 }
 
-// removePathRecord loads and safely removes the exact manager-owned PATH integration.
-// removePathRecord 读取并安全撤销精确的管理器 PATH 集成。
 // controlStateRoot keeps PATH ownership metadata with the manager-owned registration.
 // controlStateRoot 将 PATH 所有权记录与管理器持有的安装登记放在同一目录。
 func (c *Controller) controlStateRoot() string {
 	return filepath.Dir(c.options.StatePath)
 }
 
+// removePathRecord loads and safely removes the exact manager-owned PATH integration.
+// removePathRecord 读取并安全撤销精确的管理器 PATH 集成。
 func (c *Controller) removePathRecord(controlRoot string) error {
 	record, found, err := loadPathRecord(controlRoot)
 	if err != nil || !found {

@@ -235,22 +235,24 @@ func assignServiceConfigOwnership(request Request, files []string) error {
 	if err != nil {
 		return err
 	}
+	configHandle, err := os.OpenRoot(request.Paths.ConfigRoot)
+	if err != nil {
+		return err
+	}
+	defer configHandle.Close()
 	for _, relative := range files {
-		path, err := safeConfigPath(request.Paths.ConfigRoot, relative)
+		if _, err := safeConfigPath(request.Paths.ConfigRoot, relative); err != nil {
+			return err
+		}
+		if err := assignServiceConfigDirectoryOwnership(configHandle, filepath.Dir(filepath.FromSlash(relative)), identity); err != nil {
+			return err
+		}
+		// Resolve all ancestors inside the pinned configuration root before changing descriptor ownership.
+		// 先将所有上级目录解析限制在固定配置根内，再通过文件句柄变更所有权。
+		file, err := configHandle.OpenFile(filepath.FromSlash(relative), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
 			return err
 		}
-		if err := assignServiceConfigDirectoryOwnership(request.Paths.ConfigRoot, filepath.Dir(path), identity); err != nil {
-			return err
-		}
-		if err := validateDirectoryChain(request.Paths.ConfigRoot, filepath.Dir(path)); err != nil {
-			return err
-		}
-		fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if err != nil {
-			return err
-		}
-		file := os.NewFile(uintptr(fd), path)
 		info, statErr := file.Stat()
 		if statErr != nil {
 			_ = file.Close()
@@ -278,22 +280,20 @@ func assignServiceConfigOwnership(request Request, files []string) error {
 
 // assignServiceConfigDirectoryOwnership grants the selected account access only to parents of files promoted in this transaction.
 // assignServiceConfigDirectoryOwnership 仅把本次推广文件的父目录访问权交给选定账户。
-func assignServiceConfigDirectoryOwnership(root string, parent string, identity unixServiceIdentity) error {
-	relative, err := filepath.Rel(root, parent)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+func assignServiceConfigDirectoryOwnership(root *os.Root, relative string, identity unixServiceIdentity) error {
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
 		return errors.New("configuration parent escapes the service root")
 	}
-	current := filepath.Clean(root)
+	current := "."
 	if relative == "." {
 		return nil
 	}
 	for _, component := range strings.Split(relative, string(filepath.Separator)) {
 		current = filepath.Join(current, component)
-		fd, err := syscall.Open(current, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+		directory, err := root.OpenFile(current, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
 			return fmt.Errorf("open service config directory %q: %w", current, err)
 		}
-		directory := os.NewFile(uintptr(fd), current)
 		info, statErr := directory.Stat()
 		if statErr != nil {
 			_ = directory.Close()

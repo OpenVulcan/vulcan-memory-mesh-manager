@@ -1734,7 +1734,7 @@ func applyConfigFiles(configRoot string, validationRoot string, configFiles []st
 		if err := validateDirectoryChain(configRoot, filepath.Dir(target)); err != nil {
 			return fmt.Errorf("inspect config parent for %q: %w", relative, err)
 		}
-		if err := transaction.replaceFileCopy(source, target, 0o600); err != nil {
+		if err := transaction.replaceConfigFile(source, configRoot, relative, 0o600); err != nil {
 			return fmt.Errorf("apply config file %q: %w", relative, err)
 		}
 	}
@@ -2146,6 +2146,10 @@ type fileTransaction struct {
 	// privateRoots 包含按目标卷创建的同卷备份目录。
 	privateRoots []string
 
+	// configChanges retain pinned configuration parents until rollback and cleanup finish.
+	// configChanges 固定配置父目录句柄，直到回滚与清理完成，避免目录替换越界。
+	configChanges []*configFileChange
+
 	// replacements records target and backup paths for rollback.
 	// replacements 记录目标路径和备份路径供回滚使用。
 	replacements []replacement
@@ -2236,8 +2240,8 @@ func (transaction *fileTransaction) replaceFile(source string, target string, mo
 	if err != nil {
 		return err
 	}
-	// Program directories must be traversable by a different service account; configuration uses replaceFileCopy.
-	// 程序目录必须允许另一服务账户穿越；私有配置目录由 replaceFileCopy 单独处理。
+	// Program directories must be traversable by a different service account; configuration uses replaceConfigFile.
+	// 程序目录必须允许另一服务账户穿越；私有配置目录由 replaceConfigFile 单独处理。
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
@@ -2259,55 +2263,6 @@ func (transaction *fileTransaction) replaceFile(source string, target string, mo
 	if err := os.Rename(source, target); err != nil {
 		return err
 	}
-	transaction.created = append(transaction.created, createdFile{path: target, digest: digest, size: size})
-	if err := os.Chmod(target, (mode&0o777)|0o600); err != nil {
-		return err
-	}
-	return nil
-}
-
-// replaceFileCopy stages bytes beside the target and atomically publishes them after backing up the old file.
-// replaceFileCopy 在目标旁暂存字节，备份旧文件后以原子重命名发布，支持跨卷源文件与目标文件。
-func (transaction *fileTransaction) replaceFileCopy(source string, target string, mode os.FileMode) error {
-	if err := validateDirectoryPath("target parent", filepath.Dir(target)); err != nil {
-		return err
-	}
-	digest, size, err := digestFile(source)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return err
-	}
-	temporary, err := stageVerifiedFile(source, filepath.Dir(target), digest, size, mode)
-	if err != nil {
-		return err
-	}
-	removeTemporary := true
-	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporary)
-		}
-	}()
-	if info, err := os.Lstat(target); err == nil {
-		if isUnsafePathEntry(target, info) || !info.Mode().IsRegular() {
-			return fmt.Errorf("target %q is not a regular file", target)
-		}
-		backup, err := transaction.createTargetBackupPath(target)
-		if err != nil {
-			return err
-		}
-		if err := os.Rename(target, backup); err != nil {
-			return err
-		}
-		transaction.replacements = append(transaction.replacements, replacement{Target: target, Backup: backup, Digest: digest, Size: size})
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.Rename(temporary, target); err != nil {
-		return err
-	}
-	removeTemporary = false
 	transaction.created = append(transaction.created, createdFile{path: target, digest: digest, size: size})
 	if err := os.Chmod(target, (mode&0o777)|0o600); err != nil {
 		return err
@@ -2361,6 +2316,11 @@ func (transaction *fileTransaction) rollback() error {
 	}
 	transaction.rolledBack = true
 	var failures []error
+	for index := len(transaction.configChanges) - 1; index >= 0; index-- {
+		if err := transaction.configChanges[index].rollback(); err != nil {
+			failures = append(failures, fmt.Errorf("restore configuration file: %w", err))
+		}
+	}
 	for index := len(transaction.created) - 1; index >= 0; index-- {
 		item := transaction.created[index]
 		if err := validateDirectoryPath("rollback target parent", filepath.Dir(item.path)); err != nil {
@@ -2434,12 +2394,22 @@ func (transaction *fileTransaction) commit() {
 // cleanup removes private staging and backups after commit or rollback.
 // cleanup 在提交或回滚后清理私有暂存与备份目录。
 func (transaction *fileTransaction) cleanup() error {
+	defer func() {
+		for _, change := range transaction.configChanges {
+			change.close()
+		}
+	}()
 	if !transaction.committed {
 		if err := transaction.rollback(); err != nil {
 			return err
 		}
 	}
 	var failures []error
+	for _, change := range transaction.configChanges {
+		if err := change.cleanup(); err != nil {
+			failures = append(failures, fmt.Errorf("remove configuration backup: %w", err))
+		}
+	}
 	if err := os.RemoveAll(transaction.root); err != nil {
 		failures = append(failures, fmt.Errorf("remove transaction root: %w", err))
 	}

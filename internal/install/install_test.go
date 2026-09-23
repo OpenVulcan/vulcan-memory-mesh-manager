@@ -401,16 +401,16 @@ func TestTransactionCopySupportsSeparateSourceAndTargetRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	transaction := newTransaction(transactionRoot)
-	if err := transaction.replaceFileCopy(source, target, 0o600); err != nil {
+	if err := transaction.replaceConfigFile(source, targetRoot, "config.yaml", 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "new-config" {
 		t.Fatalf("target after copy promotion = %q, error = %v", got, err)
 	}
-	if len(transaction.replacements) != 1 {
-		t.Fatalf("replacement count = %d, want 1", len(transaction.replacements))
+	if len(transaction.configChanges) != 1 {
+		t.Fatalf("replacement count = %d, want 1", len(transaction.configChanges))
 	}
-	if volume := filepath.VolumeName(transaction.replacements[0].Backup); volume != filepath.VolumeName(target) {
+	if volume := filepath.VolumeName(transaction.configChanges[0].backup.Name()); volume != filepath.VolumeName(target) {
 		t.Fatalf("backup volume = %q, target volume = %q", volume, filepath.VolumeName(target))
 	}
 	if err := transaction.rollback(); err != nil {
