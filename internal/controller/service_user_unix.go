@@ -149,7 +149,13 @@ func validateServicePathAccess(path string, uid uint64, writable bool, rootOwned
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return errors.New("service path ancestor is not a real directory")
 		}
-		if err := checkServiceDirectoryAncestor(info, uid, current == nearest, writable && current == nearest); err != nil {
+		// A missing leaf may be created and assigned to the selected account by the
+		// administrator during commit. Existing writable roots still require their
+		// actual owner permissions; VMM performs its own storage creation check.
+		// 缺失的叶目录可由管理员在提交期间创建并移交给选定账户；已有可写根仍须满足
+		// 实际所有者权限，VMM 还会自行检查存储创建条件。
+		leafWritable := writable && current == nearest && nearest == cleaned
+		if err := checkServiceDirectoryAncestor(info, uid, current == nearest, leafWritable); err != nil {
 			return err
 		}
 		parent := filepath.Dir(current)
