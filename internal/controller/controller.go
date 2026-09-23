@@ -1167,9 +1167,13 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 		switch request.ServiceAction {
 		case tui.ServiceActionInstall:
 			servicePlan := request.Plan
+			servicePlan.ProgramRoot = installed.Paths.ProgramRoot
 			servicePlan.ConfigRoot = configRoot
 			servicePlan.DataRoot = installed.Paths.DataRoot
 			if err := validateServiceUserAccess(servicePlan.ServiceUser, c.servicePathChecks(servicePlan, configRoot, installed.Paths.DataRoot)); err != nil {
+				return err
+			}
+			if err := validateServiceLoggingConfigured(configRoot); err != nil {
 				return err
 			}
 			if err := client.Install(ctx, name, configRoot, request.Plan.ServiceUser, request.Plan.AutoStart); err != nil {
@@ -1252,6 +1256,24 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 		return err
 	}
 	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Snapshot: &snapshot, Progress: tui.Progress{Stage: "service", Message: "Lifecycle action completed"}})
+	return nil
+}
+
+// validateServiceLoggingConfigured prevents an existing foreground installation from registering a service that would write into the package root.
+// validateServiceLoggingConfigured 防止已有前台安装注册会向程序包根目录写日志的服务。
+func validateServiceLoggingConfigured(configRoot string) error {
+	configBytes, err := readConfigBytes(configRoot)
+	if err != nil {
+		return errors.New("installed configuration could not be read before service registration")
+	}
+	draft, err := configedit.Parse(configBytes)
+	if err != nil {
+		return errors.New("installed configuration could not be parsed before service registration")
+	}
+	directory, err := draft.Get("logging.directory")
+	if err != nil || directory.Value == "" || directory.Value != strings.TrimSpace(directory.Value) || !filepath.IsAbs(directory.Value) {
+		return errors.New("set logging.directory to a writable absolute path before installing an existing VMM as a service")
+	}
 	return nil
 }
 
@@ -1545,12 +1567,10 @@ func (c *Controller) buildConfigFiles(ctx context.Context, plan tui.InstallPlan,
 	if err := editor.ApplyStorage(storage); err != nil {
 		return nil, errors.New("selected storage configuration is incomplete")
 	}
-	if plan.ServiceMode == tui.ServiceModeService {
-		// A privileged package root is intentionally immutable to the selected service account.
-		// 特权程序包根目录对所选服务账户保持不可写，因此日志必须放在账户持有的数据根中。
-		if err := editor.SetScalar("logging.directory", filepath.Join(plan.DataRoot, "logs")); err != nil {
-			return nil, errors.New("service logging directory is absent from the VMM configuration schema")
-		}
+	// Keep managed logs in the data root for both run modes so a later service conversion does not reopen the administrator-owned package.
+	// 两种运行方式均将受管日志放入数据根，避免日后转为服务时重新写入管理员持有的程序包。
+	if err := editor.SetScalar("logging.directory", filepath.Join(plan.DataRoot, "logs")); err != nil {
+		return nil, errors.New("managed logging directory is absent from the VMM configuration schema")
 	}
 	for _, field := range plan.ConfigFields {
 		if field.Path == "" || !field.Editable || !field.Changed {

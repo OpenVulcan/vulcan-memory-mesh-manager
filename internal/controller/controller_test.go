@@ -19,6 +19,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -276,11 +277,43 @@ func TestFailedCommitRollsBackCredentialFile(t *testing.T) {
 	}
 }
 
+// TestValidateServiceLoggingConfiguredRequiresExplicitRoot rejects legacy overlays that would write service logs into the package.
+// TestValidateServiceLoggingConfiguredRequiresExplicitRoot 拒绝会把服务日志写入程序包的旧覆盖配置。
+func TestValidateServiceLoggingConfiguredRequiresExplicitRoot(t *testing.T) {
+	root := testpath.CanonicalTempDir(t)
+	configPath := filepath.Join(root, defaultConfigFileName)
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateServiceLoggingConfigured(root); err == nil {
+		t.Fatal("legacy service logging default unexpectedly accepted")
+	}
+	config := []byte("logging:\n  directory: " + strconv.Quote(filepath.Join(root, "logs")) + "\n")
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateServiceLoggingConfigured(root); err != nil {
+		t.Fatalf("explicit service log directory rejected: %v", err)
+	}
+}
+
 // TestServiceAndPathLifecycleUsesDurableState exercises service status parsing and reversible PATH state.
 // TestServiceAndPathLifecycleUsesDurableState 验证服务状态读取和可逆 PATH 状态均来自持久化安装信息。
 func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
 	controller, plan, fixture := newFixtureController(t)
 	if err := os.MkdirAll(plan.DataRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Model an existing foreground install with its managed log root before converting it to a service.
+	// 用带受管日志根的既有前台安装来验证转换为服务的流程。
+	files, err := controller.buildConfigFiles(context.Background(), plan, plan.ProgramRoot)
+	if err != nil {
+		t.Fatalf("build existing configuration: %v", err)
+	}
+	if err := os.MkdirAll(plan.ConfigRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plan.ConfigRoot, defaultConfigFileName), files[defaultConfigFileName], 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(plan.ProgramRoot, 0o700); err != nil {
@@ -492,25 +525,27 @@ func TestUpgradeRejectsPostgreSQLCredentialChange(t *testing.T) {
 	}
 }
 
-// TestServicePlanWritesWritableLogDirectory verifies a service never relies on the administrator-owned package for file logs.
-// TestServicePlanWritesWritableLogDirectory 验证服务文件日志不会依赖管理员持有的程序包目录。
-func TestServicePlanWritesWritableLogDirectory(t *testing.T) {
+// TestManagedPlanWritesWritableLogDirectory verifies both run modes keep logs out of the package so a later service conversion remains possible.
+// TestManagedPlanWritesWritableLogDirectory 验证两种运行方式均将日志放在程序包外，以便日后转换为服务。
+func TestManagedPlanWritesWritableLogDirectory(t *testing.T) {
 	controller, plan, _ := newFixtureController(t)
-	plan.ServiceMode = tui.ServiceModeService
-	files, err := controller.buildConfigFiles(context.Background(), plan, plan.ProgramRoot)
-	if err != nil {
-		t.Fatalf("build service configuration: %v", err)
-	}
-	draft, err := configedit.Parse(files[defaultConfigFileName])
-	if err != nil {
-		t.Fatalf("parse service configuration: %v", err)
-	}
-	actual, err := draft.Get("logging.directory")
-	if err != nil {
-		t.Fatalf("read service log directory: %v", err)
-	}
-	if want := filepath.Join(plan.DataRoot, "logs"); actual.Value != want {
-		t.Fatalf("service log directory = %q, want %q", actual.Value, want)
+	for _, mode := range []tui.ServiceMode{tui.ServiceModeForeground, tui.ServiceModeService} {
+		plan.ServiceMode = mode
+		files, err := controller.buildConfigFiles(context.Background(), plan, plan.ProgramRoot)
+		if err != nil {
+			t.Fatalf("build %s configuration: %v", mode, err)
+		}
+		draft, err := configedit.Parse(files[defaultConfigFileName])
+		if err != nil {
+			t.Fatalf("parse %s configuration: %v", mode, err)
+		}
+		actual, err := draft.Get("logging.directory")
+		if err != nil {
+			t.Fatalf("read %s log directory: %v", mode, err)
+		}
+		if want := filepath.Join(plan.DataRoot, "logs"); actual.Value != want {
+			t.Fatalf("%s log directory = %q, want %q", mode, actual.Value, want)
+		}
 	}
 }
 
