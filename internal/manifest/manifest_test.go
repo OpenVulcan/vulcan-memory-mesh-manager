@@ -128,6 +128,33 @@ func TestVerifyRejectsWrongTrustedKey(t *testing.T) {
 	}
 }
 
+// TestRemovedTrustRootRejectsPreviouslyValidSignature verifies the fixed-key revocation boundary used by rebuilt managers.
+// TestRemovedTrustRootRejectsPreviouslyValidSignature 验证重新发行管理器移除固定公钥后，曾有效的旧签名会被拒绝。
+func TestRemovedTrustRootRejectsPreviouslyValidSignature(t *testing.T) {
+	manifestBytes, signatureBytes, oldKeys := signedFixture(t, validManifestJSON)
+	if _, err := Verify(manifestBytes, signatureBytes, oldKeys); err != nil {
+		t.Fatal(err)
+	}
+	newPrivateKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("n", ed25519.SeedSize)))
+	newKeys := map[string]ed25519.PublicKey{"replacement-test": newPrivateKey.Public().(ed25519.PublicKey)}
+	if _, err := Verify(manifestBytes, signatureBytes, newKeys); err == nil {
+		t.Fatal("removed signing key was still accepted")
+	}
+	newEnvelope, err := json.Marshal(SignatureEnvelope{
+		Version: SignatureVersion, KeyID: "replacement-test",
+		Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(newPrivateKey, manifestBytes)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(manifestBytes, newEnvelope, newKeys); err != nil {
+		t.Fatalf("replacement signature rejected: %v", err)
+	}
+	if _, err := Verify(manifestBytes, newEnvelope, oldKeys); err == nil {
+		t.Fatal("old manager silently trusted a new key")
+	}
+}
+
 // TestVerifyRejectsMalformedJSONAndTrailingContent ensures syntax is checked after authentication and before decoding.
 // TestVerifyRejectsMalformedJSONAndTrailingContent 确保认证后、解码前检查语法。
 func TestVerifyRejectsMalformedJSONAndTrailingContent(t *testing.T) {
