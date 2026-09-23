@@ -47,7 +47,11 @@ func TestTerminalOutcomeSurvivesFullProgressBuffer(t *testing.T) {
 			}
 			controller.run(test.ctx, tui.OperationRequest{Kind: test.kind}, events)
 			terminalCount := 0
+			snapshotCount := 0
 			for event := range events {
+				if event.Snapshot != nil {
+					snapshotCount++
+				}
 				if event.Kind != tui.OperationEventProgress {
 					terminalCount++
 					if event.Kind != test.outcome {
@@ -57,6 +61,9 @@ func TestTerminalOutcomeSurvivesFullProgressBuffer(t *testing.T) {
 			}
 			if terminalCount != 1 {
 				t.Fatalf("terminal outcomes = %d, want exactly one", terminalCount)
+			}
+			if test.outcome == tui.OperationEventCompleted && snapshotCount != 1 {
+				t.Fatalf("refreshed installation snapshots = %d, want one", snapshotCount)
 			}
 		})
 	}

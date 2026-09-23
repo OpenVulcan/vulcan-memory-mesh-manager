@@ -13,7 +13,7 @@ import (
 
 // testProvider verifies request consent, builds an isolated candidate, and emits an online result independently of static validation.
 // testProvider 验证请求确认、构造隔离候选配置，并独立于静态校验发送在线结果。
-func (c *Controller) testProvider(ctx context.Context, request tui.OperationRequest, events chan<- tui.OperationEvent) error {
+func (c *Controller) testProvider(ctx context.Context, request tui.OperationRequest, events chan tui.OperationEvent) error {
 	if !request.ConfirmProviderNetwork {
 		return errors.New("Provider test requires explicit confirmation")
 	}

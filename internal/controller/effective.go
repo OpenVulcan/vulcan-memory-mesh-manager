@@ -17,7 +17,7 @@ import (
 
 // installedEffective refuses incomplete program files before invoking the registered runtime for a saved-config inspection.
 // installedEffective 在查看已保存配置前拒绝不完整程序文件，随后调用登记运行时，返回安全错误或发出结果。
-func (c *Controller) installedEffective(ctx context.Context, events chan<- tui.OperationEvent) error {
+func (c *Controller) installedEffective(ctx context.Context, events chan tui.OperationEvent) error {
 	installed, err := c.requireState()
 	if err != nil {
 		return err
@@ -31,7 +31,7 @@ func (c *Controller) installedEffective(ctx context.Context, events chan<- tui.O
 
 // emitEffective reads the actual selected root and publishes flattened safe values without modifying configuration or starting clients.
 // emitEffective 读取实际选定配置根，发出展平后的安全值，不修改配置或启动运行时客户端。
-func (c *Controller) emitEffective(ctx context.Context, binary, root string, candidate bool, events chan<- tui.OperationEvent) error {
+func (c *Controller) emitEffective(ctx context.Context, binary, root string, candidate bool, events chan tui.OperationEvent) error {
 	document, err := c.options.Effective(ctx, binary, root)
 	if err != nil {
 		return errors.New("VMM effective configuration could not be loaded")

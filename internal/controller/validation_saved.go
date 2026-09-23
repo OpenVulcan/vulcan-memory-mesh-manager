@@ -60,7 +60,7 @@ func (c *Controller) validateInstalledLocked(ctx context.Context, installed stat
 
 // diagnoseSaved holds one installation lock across configuration validation, local health, and the refreshed snapshot.
 // diagnoseSaved 在配置校验、本地健康探测与快照刷新期间持有同一安装锁，防止另一管理器替换程序。
-func (c *Controller) diagnoseSaved(ctx context.Context, events chan<- tui.OperationEvent) error {
+func (c *Controller) diagnoseSaved(ctx context.Context, events chan tui.OperationEvent) error {
 	releaseLock, err := install.LockInstallation(ctx, c.options.StatePath)
 	if err != nil {
 		return err
@@ -91,7 +91,7 @@ func (c *Controller) diagnoseSaved(ctx context.Context, events chan<- tui.Operat
 
 // validateSaved emits a dedicated result and refreshed snapshot; invalid configuration is a completed check, not an installation failure.
 // validateSaved 发出独立检查结果及刷新快照；配置无效表示检查得到否定结果，不将其误报为安装失败。
-func (c *Controller) validateSaved(ctx context.Context, events chan<- tui.OperationEvent) error {
+func (c *Controller) validateSaved(ctx context.Context, events chan tui.OperationEvent) error {
 	result, err := c.ValidateInstalled(ctx)
 	if err != nil {
 		return err

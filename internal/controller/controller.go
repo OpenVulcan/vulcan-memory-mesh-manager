@@ -728,7 +728,7 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 
 // probeSource checks only the selected source and discovers its latest authenticated release.
 // probeSource 只检查用户选定的源，并发现该源的最新已认证发行版本。
-func (c *Controller) probeSource(ctx context.Context, option tui.SourceOption, events chan<- tui.OperationEvent) error {
+func (c *Controller) probeSource(ctx context.Context, option tui.SourceOption, events chan tui.OperationEvent) error {
 	c.emitProgress(events, "probe-source", "Checking selected download source")
 	result := c.options.Probe(ctx, c.options.ProbeClient, option.Source)
 	if result.Status == download.ProbeStatusFailed || !result.Downloadable {
@@ -744,7 +744,7 @@ func (c *Controller) probeSource(ctx context.Context, option tui.SourceOption, e
 
 // fetchVersions resolves exactly one selected source and returns its authenticated release choice.
 // fetchVersions 仅使用一个选定源并返回其已认证发行版本选项。
-func (c *Controller) fetchVersions(ctx context.Context, option tui.SourceOption, tag string, events chan<- tui.OperationEvent) error {
+func (c *Controller) fetchVersions(ctx context.Context, option tui.SourceOption, tag string, events chan tui.OperationEvent) error {
 	c.emitProgress(events, "fetch-versions", "Resolving authenticated VMM release")
 	selector := release.Latest()
 	if strings.TrimSpace(tag) != "" {
@@ -767,7 +767,7 @@ func (c *Controller) fetchVersions(ctx context.Context, option tui.SourceOption,
 
 // stagePackage downloads, extracts, and prevalidates a complete VMM package before configuration.
 // stagePackage 在配置前下载、解包并预校验完整 VMM 安装包。
-func (c *Controller) stagePackage(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent) error {
+func (c *Controller) stagePackage(ctx context.Context, plan tui.InstallPlan, events chan tui.OperationEvent) error {
 	if err := validatePlanRoots(plan); err != nil {
 		return err
 	}
@@ -887,7 +887,7 @@ func (c *Controller) stagePackage(ctx context.Context, plan tui.InstallPlan, eve
 // the new version. Pausing first gives the commit a single, explicit runtime boundary.
 // 不同平台替换运行中的可执行文件会产生不同故障：Windows 可能拒绝替换，Unix 可能继续执行旧 inode，
 // 即使界面已经显示新版本。先暂停可以让提交拥有单一且明确的运行边界。
-func (c *Controller) pauseInstalledRuntime(ctx context.Context, installed state.State, exists bool, plan tui.InstallPlan, events chan<- tui.OperationEvent) (*stoppedRuntime, error) {
+func (c *Controller) pauseInstalledRuntime(ctx context.Context, installed state.State, exists bool, plan tui.InstallPlan, events chan tui.OperationEvent) (*stoppedRuntime, error) {
 	if !exists {
 		return nil, nil
 	}
@@ -1038,7 +1038,7 @@ func (runtime *stoppedRuntime) wasRunning() bool {
 
 // restoreStoppedRuntime performs bounded cleanup even when the user context was canceled.
 // restoreStoppedRuntime 即使用户上下文已取消，也会执行有界的恢复清理。
-func (c *Controller) restoreStoppedRuntime(runtime *stoppedRuntime, events chan<- tui.OperationEvent) error {
+func (c *Controller) restoreStoppedRuntime(runtime *stoppedRuntime, events chan tui.OperationEvent) error {
 	if runtime == nil {
 		return nil
 	}
@@ -1092,7 +1092,7 @@ func (c *Controller) checkRuntimeHealth(ctx context.Context, binaryPath, configR
 
 // install builds a candidate configuration, validates it with the staged binary, and commits after confirmation.
 // install 使用暂存二进制构造候选配置，经真实校验后在确认阶段提交。
-func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent) (returnErr error) {
+func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events chan tui.OperationEvent) (returnErr error) {
 	prepared, err := c.matchStaged(plan)
 	if err != nil {
 		return err
@@ -1297,7 +1297,7 @@ func (c *Controller) stopCandidateRuntime(ctx context.Context, candidate state.S
 
 // validate runs the VMM validator against a temporary candidate tree without changing official roots.
 // validate 在临时候选树上运行 VMM 校验，不修改正式目录。
-func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent, includeEffective bool) error {
+func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events chan tui.OperationEvent, includeEffective bool) error {
 	prepared, err := c.matchStaged(plan)
 	if err != nil {
 		return err
@@ -1360,7 +1360,7 @@ func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events 
 
 // serviceAction performs a real service or foreground process lifecycle action from durable state.
 // serviceAction 根据持久化状态执行真实服务或前台进程生命周期操作。
-func (c *Controller) serviceAction(ctx context.Context, request tui.OperationRequest, events chan<- tui.OperationEvent) (returnErr error) {
+func (c *Controller) serviceAction(ctx context.Context, request tui.OperationRequest, events chan tui.OperationEvent) (returnErr error) {
 	releaseLock, err := install.LockInstallation(ctx, c.options.StatePath)
 	if err != nil {
 		return err
@@ -1625,7 +1625,7 @@ func serviceAutoStart(status service.Status) (bool, error) {
 
 // pathAction applies one explicit PATH choice and persists its full reversal record.
 // pathAction 应用明确的 PATH 选择，并持久化完整撤销记录。
-func (c *Controller) pathAction(ctx context.Context, request tui.OperationRequest, events chan<- tui.OperationEvent) error {
+func (c *Controller) pathAction(ctx context.Context, request tui.OperationRequest, events chan tui.OperationEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1662,7 +1662,7 @@ func (c *Controller) pathAction(ctx context.Context, request tui.OperationReques
 
 // uninstall removes VMM program files and explicitly selected service, PATH, config, and data roots.
 // uninstall 删除 VMM 程序文件以及用户明确选择的服务、PATH、配置和数据根目录。
-func (c *Controller) uninstall(ctx context.Context, options tui.UninstallOptions, events chan<- tui.OperationEvent) error {
+func (c *Controller) uninstall(ctx context.Context, options tui.UninstallOptions, events chan tui.OperationEvent) error {
 	installed, err := c.requireState()
 	if err != nil {
 		return err
@@ -1753,7 +1753,7 @@ func (c *Controller) prepareRuntimeRemoval(ctx context.Context, installed state.
 
 // refresh reads the durable registration and reports current service/process state.
 // refresh 读取持久化登记并报告当前服务或进程状态。
-func (c *Controller) refresh(ctx context.Context, events chan<- tui.OperationEvent) error {
+func (c *Controller) refresh(ctx context.Context, events chan tui.OperationEvent) error {
 	snapshot, err := c.snapshot(ctx)
 	if err != nil {
 		return err
@@ -2603,29 +2603,42 @@ func (c *Controller) validateFunc() install.ValidateFunc {
 
 // emitProgress emits a bounded progress update for the TUI.
 // emitProgress 向 TUI 发出有界进度更新。
-func (c *Controller) emitProgress(events chan<- tui.OperationEvent, stage string, message string) {
+func (c *Controller) emitProgress(events chan tui.OperationEvent, stage string, message string) {
 	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Progress: tui.Progress{Stage: stage, Message: message}, Message: message})
 }
 
-// emit sends an event without blocking cancellation cleanup or leaking internal errors.
-// emit 发送事件时不阻塞取消清理，也不泄漏内部错误。
-func (c *Controller) emit(events chan<- tui.OperationEvent, event tui.OperationEvent) {
+// emit preserves state-bearing events while allowing optional text progress to be dropped under backpressure.
+// emit 在背压下保留携带状态的事件，同时允许丢弃可选的文字进度。
+func (c *Controller) emit(events chan tui.OperationEvent, event tui.OperationEvent) {
+	if events == nil {
+		return
+	}
+	if event.Effective != nil || event.Preview != nil || event.ProviderTest != nil || event.Health != nil || event.Snapshot != nil || event.Package != nil || event.Sources != nil || event.Versions != nil || event.Validation != nil || event.Config != nil {
+		c.emitRequired(events, event)
+		return
+	}
 	select {
 	case events <- event:
 	default:
 	}
 }
 
-// emitTerminal guarantees the one operation outcome fits in the stream even when optional progress filled its buffer.
-// emitTerminal 保证单个操作结果进入事件流；可选进度占满缓冲区时，仅丢弃最早的一条进度。
+// emitTerminal guarantees the one operation outcome fits in the stream even when buffered events filled it.
+// emitTerminal 保证单个操作结果进入事件流；缓冲事件占满通道时让出最早的一个位置。
 func (c *Controller) emitTerminal(events chan tui.OperationEvent, event tui.OperationEvent) {
+	c.emitRequired(events, event)
+}
+
+// emitRequired makes room for a state-bearing or terminal result without waiting for a slow consumer.
+// emitRequired 为状态结果或终止结果腾出缓冲位置，无需等待缓慢的接收方。
+func (c *Controller) emitRequired(events chan tui.OperationEvent, event tui.OperationEvent) {
 	select {
 	case events <- event:
 		return
 	default:
 	}
-	// Only the operation goroutine sends to this channel, so freeing one slot guarantees the terminal send can finish.
-	// 此通道仅由当前操作协程发送，因此腾出一个位置后终止事件一定能够写入。
+	// Only the operation goroutine sends to this channel, so freeing one slot guarantees this required send can finish.
+	// 此通道仅由当前操作协程发送，因此腾出一个位置后必要事件一定能够写入。
 	select {
 	case <-events:
 	default:
