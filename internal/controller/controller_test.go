@@ -337,6 +337,9 @@ func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
 			t.Fatal("fixture installation failed")
 		}
 	}
+	if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationService, TargetMode: tui.ServiceModeForeground, ServiceAction: tui.ServiceActionStop})) != tui.OperationEventCompleted {
+		t.Fatal("foreground runtime could not be stopped before service registration")
+	}
 	installed, err := state.Load(controller.options.StatePath)
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,16 @@ import (
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/tui"
 )
 
+// TestSnapshotWithoutInstallation treats a missing registration as an uninstalled state.
+// TestSnapshotWithoutInstallation 将缺失安装登记识别为尚未安装的正常状态。
+func TestSnapshotWithoutInstallation(t *testing.T) {
+	controller, _, _ := newFixtureController(t)
+	snapshot, err := controller.Snapshot(context.Background())
+	if err != nil || snapshot.Installed || snapshot.Incomplete {
+		t.Fatalf("Snapshot() without installation = %+v, %v", snapshot, err)
+	}
+}
+
 // TestIncompleteInstallationCanReinstall checks missing files, changed registered bytes, and an unfinished completion marker.
 // TestIncompleteInstallationCanReinstall 检查文件缺失、已登记内容损坏及完成标记未写入三种情况。
 func TestIncompleteInstallationCanReinstall(t *testing.T) {
@@ -24,6 +34,9 @@ func TestIncompleteInstallationCanReinstall(t *testing.T) {
 				if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
 					t.Fatal("fixture installation failed")
 				}
+			}
+			if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationService, ServiceAction: tui.ServiceActionStop, TargetMode: tui.ServiceModeForeground})) != tui.OperationEventCompleted {
+				t.Fatal("explicitly stopping the installed foreground runtime failed")
 			}
 			before, err := controller.Snapshot(context.Background())
 			if err != nil || !before.Installed || before.Incomplete || before.Running {

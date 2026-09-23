@@ -580,8 +580,9 @@ func (m *Model) renderService() []string {
 	lines := []string{
 		m.text(i18n.KeyServiceTitle, nil),
 		m.option(0, m.text(i18n.KeyServiceCLI, nil)),
-		m.option(1, m.text(i18n.KeyServiceMode, nil)+m.label("（手动启动）", " (manual start)")),
+		m.option(1, m.text(i18n.KeyServiceMode, nil)+m.label("（不开机自启）", " (no startup on boot)")),
 		m.option(2, m.text(i18n.KeyServiceMode, nil)+" + "+m.text(i18n.KeyServiceAutoStart, nil)),
+		m.label("首次安装后立即启动并检查健康；开机自启只影响以后开机。", "First install starts and checks health; autostart applies to later boots."),
 	}
 	if m.serviceUserVisible() {
 		lines = append(lines,

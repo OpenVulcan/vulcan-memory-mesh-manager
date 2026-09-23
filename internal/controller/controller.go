@@ -1230,7 +1230,10 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 	if err := state.Save(c.options.StatePath, updatedState); err != nil {
 		return errors.New("installed VMM state could not be updated")
 	}
-	if stopped != nil && stopped.wasRunning() {
+	// A first install must prove the selected runtime can start and become healthy.
+	// Upgrades preserve an intentionally stopped instance's prior running state.
+	// 首次安装必须证明所选运行方式可启动且健康；升级保留原实例主动停止的状态。
+	if !oldExists || stopped != nil && stopped.wasRunning() {
 		if err := c.startInstalledRuntime(ctx, plan, updatedState); err != nil {
 			return err
 		}
@@ -2484,7 +2487,7 @@ func (c *Controller) requireState() (state.State, error) {
 	loaded, err := state.Load(c.options.StatePath)
 	if err != nil {
 		if isMissingState(err) {
-			return state.State{}, errors.New("VMM is not installed")
+			return state.State{}, fmt.Errorf("VMM is not installed: %w", err)
 		}
 		return state.State{}, errors.New("VMM installation state is invalid")
 	}
@@ -2857,17 +2860,10 @@ func safeRelativePath(root string, relative string) (string, error) {
 	return filepath.Join(root, clean), nil
 }
 
-// isMissingState recognizes the state package's wrapped missing-file errors on all platforms.
-// isMissingState 识别 state 包在各平台包装后的缺失文件错误。
+// isMissingState recognizes only the state package's preserved missing-file error.
+// isMissingState 只识别 state 包保留的文件不存在错误。
 func isMissingState(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return true
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "cannot find the path") || strings.Contains(message, "no such file or directory")
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // loadState returns a state snapshot and whether a valid record was found.
