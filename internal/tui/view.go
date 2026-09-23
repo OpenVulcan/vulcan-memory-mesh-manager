@@ -4,9 +4,9 @@ package tui
 
 import (
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"net/url"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/download"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/i18n"
@@ -27,7 +27,8 @@ func (m *Model) render() string {
 	if m.errorMessage != "" {
 		header = append(header, m.label("错误：", "Error: ")+m.errorMessage)
 	}
-	page := m.renderPage()
+	header = wrapProse(header, m.renderWidth())
+	page := wrapProse(m.renderPage(), m.renderWidth())
 	tail := []string{"", m.footer()}
 	if m.busy {
 		tail = append([]string{m.renderProgress()}, tail...)
@@ -36,6 +37,20 @@ func (m *Model) render() string {
 	lines := append(header, page...)
 	lines = append(lines, tail...)
 	return boundLines(lines, m.renderWidth(), m.renderHeight())
+}
+
+// wrapProse preserves complete instructions while leaving selectable rows and editor indentation intact.
+// wrapProse 将说明文本完整换行，同时保留可选行与编辑器缩进，避免破坏光标定位。
+func wrapProse(lines []string, width int) []string {
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "> ") {
+			wrapped = append(wrapped, line)
+			continue
+		}
+		wrapped = append(wrapped, strings.Split(ansi.Hardwrap(sanitizeTerminalLine(line), width, false), "\n")...)
+	}
+	return wrapped
 }
 
 // visiblePage keeps the selected item and its active input inside a bounded scrolling page.
@@ -80,7 +95,7 @@ func (m *Model) renderPage() []string {
 	case ScreenSource:
 		return m.renderSource()
 	case ScreenCustomSource:
-		return []string{m.label("输入 HTTPS GitHub 代理前缀：", "Enter HTTPS GitHub proxy prefix:"), "> " + m.input}
+		return []string{m.label("输入 HTTPS GitHub 代理前缀：", "Enter HTTPS GitHub proxy prefix:"), m.inputLine("> ", m.input)}
 	case ScreenVersion:
 		return m.renderVersion()
 	case ScreenInstallPath:
@@ -205,7 +220,7 @@ func (m *Model) renderSource() []string {
 func (m *Model) renderVersion() []string {
 	lines := []string{m.label("选择 VMM 版本", "Select VMM version")}
 	if len(m.versions) == 0 {
-		lines = append(lines, m.label("没有预载版本，请输入发行标签：", "No preloaded versions; enter a release tag:"), "> "+m.input)
+		lines = append(lines, m.label("没有预载版本，请输入发行标签：", "No preloaded versions; enter a release tag:"), m.inputLine("> ", m.input))
 		return lines
 	}
 	for index, version := range m.versions {
@@ -229,7 +244,7 @@ func (m *Model) renderInstallPath() []string {
 	return []string{
 		m.label("安装目录和配置目录必须在注册服务时保持稳定。", "Program and configuration roots must stay stable after service registration."),
 		names[m.inputField] + ":",
-		"> " + m.input,
+		m.inputLine("> ", m.input),
 	}
 }
 
@@ -275,7 +290,7 @@ func (m *Model) renderStorageCredential() []string {
 			if key == "value" {
 				input = maskedValue(input)
 			}
-			lines = append(lines, m.option(index, label), "    > "+input)
+			lines = append(lines, m.option(index, label), m.inputLine("    > ", input))
 			continue
 		}
 		lines = append(lines, m.option(index, label+" = "+value))
@@ -392,7 +407,7 @@ func (m *Model) renderProviderWizard() []string {
 			if key == "api_key_value" {
 				input = maskedValue(input)
 			}
-			lines = append(lines, m.option(index, label), "    > "+input)
+			lines = append(lines, m.option(index, label), m.inputLine("    > ", input))
 			continue
 		}
 		lines = append(lines, m.option(index, label+" = "+value))
@@ -484,7 +499,7 @@ func (m *Model) renderFieldEdit() []string {
 				if inputLineIndex == 0 {
 					prefix = "    > "
 				}
-				lines = append(lines, prefix+inputLine)
+				lines = append(lines, m.inputLine(prefix, inputLine))
 			}
 			continue
 		}
@@ -517,7 +532,7 @@ func (m *Model) renderServiceUser() []string {
 	return []string{
 		m.label("确认服务运行用户", "Confirm service runtime user"),
 		m.label("该账户由命令层提供；管理器不会从 SUDO_USER 推测。", "The command layer provides this account; the manager never guesses SUDO_USER."),
-		m.label("本机用户：", "Local user: ") + "> " + m.input,
+		m.inputLine(m.label("本机用户：", "Local user: ")+"> ", m.input),
 		m.label("直接按 Enter 确认，或编辑后按 Enter。", "Press Enter to confirm, or edit before pressing Enter."),
 	}
 }
@@ -690,17 +705,35 @@ func sanitizeTerminalLine(line string) string {
 	return safe.String()
 }
 
-// truncateRunes keeps UTF-8 text intact while enforcing a display width bound.
-// truncateRunes 保持 UTF-8 文本完整，同时限制显示宽度。
+// truncateRunes preserves grapheme clusters while enforcing terminal display columns.
+// truncateRunes 保持字素簇完整，按终端显示列限制文本宽度。
 func truncateRunes(value string, width int) string {
-	if width <= 0 || utf8.RuneCountInString(value) <= width {
-		return value
+	if width <= 0 {
+		return ""
 	}
-	runes := []rune(value)
-	if width == 1 {
-		return string(runes[:1])
+	return ansi.Truncate(value, width, "…")
+}
+
+// inputLine scrolls append-only text horizontally so the latest input remains visible.
+// inputLine 对末尾追加的文本进行横向滚动，使最新输入始终可见；前缀占用固定显示列。
+func (m *Model) inputLine(prefix, value string) string {
+	value = sanitizeTerminalLine(value)
+	available := m.renderWidth() - ansi.StringWidth(prefix)
+	if available <= 0 {
+		return truncateRunes(prefix, m.renderWidth())
 	}
-	return string(runes[:width-1]) + "…"
+	length := ansi.StringWidth(value)
+	if length <= available {
+		return prefix + value
+	}
+	tail := ansi.Cut(value, length-available+1, length)
+	// A cut inside a wide cluster retains that entire cluster; remove it when it exceeds the remaining columns.
+	// 切点位于宽字素内部时会保留整个字素；若超出剩余列数，则移除该完整字素。
+	for ansi.StringWidth(tail) > available-1 {
+		cluster, _ := ansi.FirstGraphemeCluster(tail, ansi.GraphemeWidth)
+		tail = tail[len(cluster):]
+	}
+	return prefix + "…" + tail
 }
 
 // valueOrDash keeps empty paths and optional statuses visually explicit.
