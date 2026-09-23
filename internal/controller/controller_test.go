@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/archive"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configbridge"
@@ -844,6 +845,99 @@ func TestPathActionRollsBackWhenStateSaveFails(t *testing.T) {
 	}
 	if _, err := os.Stat(pathRecordPath(controller.controlStateRoot())); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("PATH ownership receipt survived compensation: %v", err)
+	}
+}
+
+// TestUninstallWaitsForInstallLockBeforeServiceRemoval verifies native service changes cannot precede the program-file lock.
+// TestUninstallWaitsForInstallLockBeforeServiceRemoval 验证卸载等待程序文件锁时不会提前注销系统服务。
+func TestUninstallWaitsForInstallLockBeforeServiceRemoval(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	plan.ServiceMode = tui.ServiceModeService
+	plan.ServiceUser = currentServiceUser(t)
+	adapter := &fakeService{}
+	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return adapter, nil }
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("service fixture install failed at %s", kind)
+		}
+	}
+	releaseLock, err := install.LockInstallation(context.Background(), controller.options.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if releaseLock != nil {
+			_ = releaseLock()
+		}
+	}()
+	serviceTouched := make(chan struct{}, 1)
+	controller.options.ServiceFactory = func(string) (ServiceClient, error) {
+		serviceTouched <- struct{}{}
+		return adapter, nil
+	}
+	events, err := controller.Start(context.Background(), tui.OperationRequest{Kind: tui.OperationUninstall, Uninstall: tui.UninstallOptions{RemoveService: true, KeepConfig: true, KeepData: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	early := false
+	select {
+	case <-serviceTouched:
+		early = true
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := releaseLock(); err != nil {
+		t.Fatal(err)
+	}
+	releaseLock = nil
+	var terminal tui.OperationEventKind
+	for event := range events {
+		if event.Kind == tui.OperationEventCompleted || event.Kind == tui.OperationEventFailed || event.Kind == tui.OperationEventCancelled {
+			terminal = event.Kind
+		}
+	}
+	if early {
+		t.Fatal("service control ran before installation lock was released")
+	}
+	if terminal != tui.OperationEventCompleted {
+		t.Fatalf("uninstall terminal event = %s", terminal)
+	}
+}
+
+// TestUninstallPreservedProgramKeepsConfigurationAndData verifies changed owned files cannot trigger destructive root cleanup.
+// TestUninstallPreservedProgramKeepsConfigurationAndData 验证受管程序已改变时，不会继续删除配置和数据库根目录。
+func TestUninstallPreservedProgramKeepsConfigurationAndData(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("fixture install failed at %s", kind)
+		}
+	}
+	binaryPath := filepath.Join(plan.ProgramRoot, filepath.FromSlash(controller.identity.VMMExecutablePath))
+	if err := os.WriteFile(binaryPath, []byte("locally changed program"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	events := collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationUninstall, Uninstall: tui.UninstallOptions{KeepConfig: false, KeepData: false}})
+	terminal := terminalKind(events)
+	if terminal != tui.OperationEventFailed {
+		t.Fatal("partial program removal reported complete root cleanup")
+	}
+	var refreshed *tui.InstallationSnapshot
+	for _, event := range events {
+		if event.Snapshot != nil {
+			refreshed = event.Snapshot
+		}
+	}
+	if refreshed == nil || refreshed.Installed || !refreshed.Incomplete {
+		t.Fatalf("failed uninstall did not refresh incomplete state: %+v", refreshed)
+	}
+	for _, path := range []string{plan.ConfigRoot, plan.DataRoot, controller.options.StatePath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preserved program lost configuration, data, or registration %q: %v", path, err)
+		}
+	}
+	saved, err := state.Load(controller.options.StatePath)
+	if err != nil || saved.InstallationComplete {
+		t.Fatalf("partial uninstall retained completed registration: %+v %v", saved, err)
 	}
 }
 

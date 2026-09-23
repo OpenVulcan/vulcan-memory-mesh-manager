@@ -455,6 +455,10 @@ type UninstallRequest struct {
 	// DeleteRegistration removes the registration only after all owned files are gone.
 	// DeleteRegistration 仅在所有仍由管理器拥有的文件都删除后移除登记。
 	DeleteRegistration bool
+
+	// BeforeFiles reconciles native runtime and PATH state after acquiring the installation lock and before removing owned files.
+	// BeforeFiles 在取得安装锁之后、删除受管文件之前协调系统运行实例与 PATH，并返回剩余登记状态。
+	BeforeFiles func(context.Context, state.State) (state.ServiceState, state.PATHState, error)
 }
 
 // UninstallResult reports removed and preserved files without touching ConfigRoot or DataRoot contents.
@@ -714,6 +718,25 @@ func Uninstall(ctx context.Context, request UninstallRequest) (result UninstallR
 	}
 	if err := validateExistingState(current, request.Paths); err != nil {
 		return UninstallResult{}, err
+	}
+	if request.BeforeFiles != nil {
+		// Keep native side effects inside the same lock as file removal, then persist their durable state if files remain.
+		// 将系统副作用与文件删除置于同一把锁内；若文件保留，则持久化实际剩余的服务与 PATH 状态。
+		serviceState, pathState, err := request.BeforeFiles(ctx, current)
+		if err != nil {
+			return UninstallResult{}, err
+		}
+		current.Service = serviceState
+		current.PATH = pathState
+		if err := current.Validate(); err != nil {
+			return UninstallResult{}, fmt.Errorf("uninstall preflight produced invalid state: %w", err)
+		}
+	}
+	// Record an incomplete installation before deleting files so a failed or partial uninstall cannot retain a success marker.
+	// 删除文件前先记录未完成状态，避免卸载失败或部分完成后仍保留成功标记。
+	current.InstallationComplete = false
+	if err := state.Save(request.StatePath, current); err != nil {
+		return UninstallResult{}, fmt.Errorf("record pending uninstall: %w", err)
 	}
 
 	result = UninstallResult{State: current}

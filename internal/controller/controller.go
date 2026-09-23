@@ -709,9 +709,9 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 		c.emit(events, tui.OperationEvent{Kind: tui.OperationEventCompleted, Message: "Operation completed"})
 		return
 	}
-	if request.Kind == tui.OperationInstall {
-		// Refresh after install defers finish so an already-open TUI cannot keep displaying the pre-failure success state.
-		// 安装的延迟收尾完成后刷新，使已经打开的界面不会继续显示失败前的成功状态。
+	if request.Kind == tui.OperationInstall || request.Kind == tui.OperationService || request.Kind == tui.OperationPath || request.Kind == tui.OperationUninstall {
+		// Refresh after a lifecycle failure so an already-open TUI sees the actual registration and runtime state.
+		// 生命周期操作失败后刷新，使已打开的界面显示实际登记与运行状态。
 		inspection, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		snapshot, snapshotErr := c.snapshot(inspection)
 		cancel()
@@ -1612,44 +1612,18 @@ func (c *Controller) uninstall(ctx context.Context, options tui.UninstallOptions
 	if err != nil {
 		return err
 	}
-	if installed.Service.Name != "" {
-		if install.FilesIntact(installed) != "" {
-			return ErrDamagedServiceControl
-		}
-		if !options.RemoveService {
-			return errors.New("installed VMM service must be removed explicitly before uninstall")
-		}
-		binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
-		client, err := c.options.ServiceFactory(binaryPath)
-		if err != nil {
-			return errors.New("VMM service control is unavailable")
-		}
-		if err := client.Uninstall(ctx, installed.Service.Name); err != nil {
-			return errors.New("VMM service removal failed")
-		}
-	} else if c.process != nil {
-		binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
-		if binder, ok := c.process.(processConfigBinder); ok {
-			binder.Bind(binaryPath, installed.Paths.ConfigRoot)
-		}
-		status, statusErr := c.process.Status(ctx, binaryPath)
-		if statusErr != nil {
-			return errors.New("VMM foreground status failed")
-		}
-		if status.Running {
-			if err := c.process.Stop(ctx, binaryPath); err != nil {
-				return errors.New("VMM foreground stop failed")
-			}
-		}
-	}
-	if options.RemovePath && installed.PATH.Owner == state.PATHOwnerManager {
-		if err := c.removePathRecord(c.controlStateRoot()); err != nil {
-			return err
-		}
-		installed.PATH = emptyPATHState()
-	}
-	if _, err := install.Uninstall(ctx, install.UninstallRequest{ManagerRoot: c.options.ManagerRoot, Paths: installed.Paths, StatePath: c.options.StatePath, DeleteRegistration: true}); err != nil {
+	result, err := install.Uninstall(ctx, install.UninstallRequest{
+		ManagerRoot: c.options.ManagerRoot, Paths: installed.Paths, StatePath: c.options.StatePath, DeleteRegistration: true,
+		BeforeFiles: func(lockedContext context.Context, current state.State) (state.ServiceState, state.PATHState, error) {
+			installed = current
+			return c.prepareRuntimeRemoval(lockedContext, current, options)
+		},
+	})
+	if err != nil {
 		return errors.New("VMM program uninstall failed")
+	}
+	if !result.RegistrationDeleted {
+		return errors.New("modified VMM program files were preserved; repair or inspect them before removing configuration and data")
 	}
 	if options.RemovePath {
 		_ = os.Remove(pathRecordPath(c.controlStateRoot()))
@@ -1666,6 +1640,50 @@ func (c *Controller) uninstall(ctx context.Context, options tui.UninstallOptions
 	}
 	c.emitProgress(events, "uninstall", "VMM program files were removed")
 	return nil
+}
+
+// prepareRuntimeRemoval stops native execution and removes owned PATH entries while the program-uninstall lock is held.
+// prepareRuntimeRemoval 在程序卸载锁内停止原生运行实例并移除受管 PATH 入口，返回应保存的服务与 PATH 状态。
+func (c *Controller) prepareRuntimeRemoval(ctx context.Context, installed state.State, options tui.UninstallOptions) (state.ServiceState, state.PATHState, error) {
+	serviceState, pathState := installed.Service, installed.PATH
+	if installed.Service.Name != "" {
+		if install.FilesIntact(installed) != "" {
+			return serviceState, pathState, ErrDamagedServiceControl
+		}
+		if !options.RemoveService {
+			return serviceState, pathState, errors.New("installed VMM service must be removed explicitly before uninstall")
+		}
+		binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
+		client, err := c.options.ServiceFactory(binaryPath)
+		if err != nil {
+			return serviceState, pathState, errors.New("VMM service control is unavailable")
+		}
+		if err := client.Uninstall(ctx, installed.Service.Name); err != nil {
+			return serviceState, pathState, errors.New("VMM service removal failed")
+		}
+		serviceState = state.ServiceState{}
+	} else if c.process != nil {
+		binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
+		if binder, ok := c.process.(processConfigBinder); ok {
+			binder.Bind(binaryPath, installed.Paths.ConfigRoot)
+		}
+		status, statusErr := c.process.Status(ctx, binaryPath)
+		if statusErr != nil {
+			return serviceState, pathState, errors.New("VMM foreground status failed")
+		}
+		if status.Running {
+			if err := c.process.Stop(ctx, binaryPath); err != nil {
+				return serviceState, pathState, errors.New("VMM foreground stop failed")
+			}
+		}
+	}
+	if options.RemovePath && installed.PATH.Owner == state.PATHOwnerManager {
+		if err := c.removePathRecord(c.controlStateRoot()); err != nil {
+			return serviceState, pathState, err
+		}
+		pathState = emptyPATHState()
+	}
+	return serviceState, pathState, nil
 }
 
 // refresh reads the durable registration and reports current service/process state.
