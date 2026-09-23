@@ -1238,6 +1238,9 @@ func TestPrivilegedServiceCommitContract(t *testing.T) {
 	if _, err := prepared.prepared.CommitInstall(context.Background(), request); err != nil {
 		t.Fatalf("CommitInstall() error = %v", err)
 	}
+	if err := validateServiceUserAccess(plan.ServiceUser, controller.servicePathChecks(plan, plan.ConfigRoot, plan.DataRoot)); err != nil {
+		t.Fatalf("installed service path access error = %v", err)
+	}
 }
 
 // currentServiceUser returns the account that owns test-created configuration and data roots.
@@ -1354,10 +1357,16 @@ func newFixturePackage(t *testing.T) fixturePackage {
 	}
 	for relative, data := range files {
 		path := filepath.Join(packageRoot, filepath.FromSlash(relative))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, data, 0o700); err != nil {
+		// Production release executables are readable and executable by the selected service account.
+		// 正式发行的可执行文件允许所选服务账户读取和执行，测试归档必须保留相同权限。
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(relative, "bin/") {
+			mode = 0o755
+		}
+		if err := os.WriteFile(path, data, mode); err != nil {
 			t.Fatal(err)
 		}
 		digest := sha256.Sum256(data)
