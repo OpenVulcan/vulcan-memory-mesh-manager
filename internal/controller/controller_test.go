@@ -88,26 +88,47 @@ func TestSensitiveFieldRequiresEnvironmentReference(t *testing.T) {
 func TestRollbackServiceActionRestoresNativeRegistration(t *testing.T) {
 	previous := state.ServiceState{Name: "vmm-local", User: "alice", AutoStart: true}
 	tests := []struct {
-		action     tui.ServiceAction
-		previous   state.ServiceState
-		wasRunning bool
-		wantCalls  string
+		action    tui.ServiceAction
+		previous  state.ServiceState
+		observed  service.Status
+		wantCalls string
 	}{
 		{action: tui.ServiceActionInstall, wantCalls: "uninstall"},
-		{action: tui.ServiceActionUninstall, previous: previous, wasRunning: true, wantCalls: "install,start"},
-		{action: tui.ServiceActionEnable, previous: previous, wantCalls: "disable"},
-		{action: tui.ServiceActionDisable, previous: previous, wantCalls: "enable"},
+		{action: tui.ServiceActionUninstall, previous: state.ServiceState{Name: "vmm-local", User: "alice"}, observed: service.Status{State: "running", AutoStart: "enabled"}, wantCalls: "install,start"},
+		{action: tui.ServiceActionUninstall, previous: previous, observed: service.Status{State: "not-installed"}},
+		{action: tui.ServiceActionEnable, previous: previous, observed: service.Status{AutoStart: "disabled"}, wantCalls: "disable"},
+		{action: tui.ServiceActionEnable, previous: previous, observed: service.Status{AutoStart: "enabled"}},
+		{action: tui.ServiceActionDisable, previous: previous, observed: service.Status{AutoStart: "enabled"}, wantCalls: "enable"},
+		{action: tui.ServiceActionDisable, previous: previous, observed: service.Status{AutoStart: "disabled"}},
 	}
 	for _, test := range tests {
 		adapter := &fakeService{}
-		if err := rollbackServiceAction(context.Background(), adapter, "vmm-local", "config", test.previous, test.wasRunning, test.action); err != nil {
+		if err := rollbackServiceAction(context.Background(), adapter, "vmm-local", "config", test.previous, test.observed, test.action); err != nil {
 			t.Fatalf("rollback %s: %v", test.action, err)
 		}
 		if got := strings.Join(adapter.calls, ","); got != test.wantCalls {
 			t.Errorf("rollback %s calls = %q, want %q", test.action, got, test.wantCalls)
 		}
-		if test.action == tui.ServiceActionUninstall && adapter.lastUser != previous.User {
+		if test.action == tui.ServiceActionUninstall && test.observed.State != "not-installed" && adapter.lastUser != previous.User {
 			t.Errorf("restored user = %q, want %q", adapter.lastUser, previous.User)
+		}
+		if test.action == tui.ServiceActionUninstall && test.observed.State != "not-installed" && !adapter.lastAutoStart {
+			t.Error("rollback ignored the observed native auto-start policy")
+		}
+	}
+}
+
+// TestServiceAutoStartRejectsConflictingNativeStatus prevents rollback from guessing a prior platform policy.
+// TestServiceAutoStartRejectsConflictingNativeStatus 防止补偿逻辑猜测未知或互相矛盾的系统自启策略。
+func TestServiceAutoStartRejectsConflictingNativeStatus(t *testing.T) {
+	for _, status := range []service.Status{
+		{AutoStart: "unknown"},
+		{AutoStart: "true", StartType: "manual"},
+		{AutoStart: "false", StartType: "automatic"},
+		{AutoStart: "false", StartType: "custom"},
+	} {
+		if _, err := serviceAutoStart(status); err == nil {
+			t.Errorf("accepted unsupported service policy: %+v", status)
 		}
 	}
 }
@@ -395,6 +416,36 @@ func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
 	}
 	if pathAdapter.removes != 1 {
 		t.Fatalf("PATH remove calls = %d, want 1", pathAdapter.removes)
+	}
+}
+
+// TestServiceRemovalReconcilesMissingNativeRegistration clears stale metadata without creating a new native service.
+// TestServiceRemovalReconcilesMissingNativeRegistration 清理系统服务已不存在的过期登记，不重新创建原生服务。
+func TestServiceRemovalReconcilesMissingNativeRegistration(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	plan.ServiceMode = tui.ServiceModeService
+	plan.ServiceUser = currentServiceUser(t)
+	adapter := &fakeService{}
+	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return adapter, nil }
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("service fixture install failed at %s", kind)
+		}
+	}
+	adapter.status = service.Status{State: "not-installed", AutoStart: "false"}
+	adapter.calls = nil
+	request := tui.OperationRequest{Kind: tui.OperationService, TargetMode: tui.ServiceModeService, ServiceAction: tui.ServiceActionUninstall}
+	if terminalKind(collectOperation(t, controller, request)) != tui.OperationEventCompleted {
+		t.Fatal("stale native service registration was not cleared")
+	}
+	for _, call := range adapter.calls {
+		if call == "uninstall" || call == "install" {
+			t.Fatalf("native service was mutated despite being absent: %v", adapter.calls)
+		}
+	}
+	registered, err := state.Load(controller.options.StatePath)
+	if err != nil || registered.Service.Name != "" {
+		t.Fatalf("service metadata remains after reconciliation: %+v %v", registered.Service, err)
 	}
 }
 
@@ -1116,9 +1167,12 @@ type fixturePackage struct {
 // fakeService implements the controller service boundary without invoking a platform manager.
 // fakeService 实现 controller 服务边界，但不会调用真实平台服务管理器。
 type fakeService struct {
-	status        service.Status
-	calls         []string
-	lastUser      string
+	status   service.Status
+	calls    []string
+	lastUser string
+	// lastAutoStart captures the last registration policy for rollback assertions.
+	// lastAutoStart 保存最后一次注册的自启策略，供补偿断言使用。
+	lastAutoStart bool
 	installErr    error
 	installErrors []error
 	uninstallErr  error
@@ -1129,9 +1183,10 @@ type fakeService struct {
 
 // Install records service registration.
 // Install 记录服务注册。
-func (f *fakeService) Install(_ context.Context, _ string, _ string, serviceUser string, _ bool) error {
+func (f *fakeService) Install(_ context.Context, _ string, _ string, serviceUser string, autoStart bool) error {
 	f.calls = append(f.calls, "install")
 	f.lastUser = serviceUser
+	f.lastAutoStart = autoStart
 	if len(f.installErrors) > 0 {
 		err := f.installErrors[0]
 		f.installErrors = f.installErrors[1:]
@@ -1143,6 +1198,11 @@ func (f *fakeService) Install(_ context.Context, _ string, _ string, serviceUser
 		return f.installErr
 	}
 	f.status.State = "stopped"
+	if autoStart {
+		f.status.AutoStart = "enabled"
+	} else {
+		f.status.AutoStart = "disabled"
+	}
 	return nil
 }
 
@@ -1154,6 +1214,7 @@ func (f *fakeService) Uninstall(context.Context, string) error {
 		return f.uninstallErr
 	}
 	f.status.State = "not-installed"
+	f.status.AutoStart = "false"
 	return nil
 }
 
@@ -1190,6 +1251,7 @@ func (f *fakeService) Restart(context.Context, string) error {
 // Enable 记录自动启动开启。
 func (f *fakeService) Enable(context.Context, string) error {
 	f.calls = append(f.calls, "enable")
+	f.status.AutoStart = "enabled"
 	return nil
 }
 
@@ -1197,6 +1259,7 @@ func (f *fakeService) Enable(context.Context, string) error {
 // Disable 记录自动启动关闭。
 func (f *fakeService) Disable(context.Context, string) error {
 	f.calls = append(f.calls, "disable")
+	f.status.AutoStart = "disabled"
 	return nil
 }
 

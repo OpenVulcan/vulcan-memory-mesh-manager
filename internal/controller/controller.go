@@ -1401,13 +1401,22 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 		if request.ServiceAction != tui.ServiceActionInstall && previousService.Name == "" {
 			return errors.New("VMM service is not registered")
 		}
-		serviceWasRunning := false
-		if request.ServiceAction == tui.ServiceActionUninstall {
+		// Observe native registration before a reversible change so compensation restores only a real prior setting.
+		// 可逆修改前读取原生登记，使补偿只恢复真实存在的旧设置。
+		observedService := service.Status{}
+		if request.ServiceAction == tui.ServiceActionUninstall || request.ServiceAction == tui.ServiceActionEnable || request.ServiceAction == tui.ServiceActionDisable {
 			status, statusErr := client.GetStatus(ctx, name)
 			if statusErr != nil {
-				return errors.New("VMM service status could not be checked before removal")
+				return errors.New("VMM service status could not be checked before changing registration")
 			}
-			serviceWasRunning = status.State == "running"
+			observedService = status
+			if status.State == "not-installed" {
+				if request.ServiceAction != tui.ServiceActionUninstall {
+					return errors.New("VMM service is not installed")
+				}
+			} else if _, err := serviceAutoStart(status); err != nil {
+				return err
+			}
 		}
 		switch request.ServiceAction {
 		case tui.ServiceActionInstall:
@@ -1440,8 +1449,10 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 			}
 			installed.Service = state.ServiceState{Name: name, User: serviceUserForState(request.Plan.ServiceUser), AutoStart: request.Plan.AutoStart}
 		case tui.ServiceActionUninstall:
-			if err := client.Uninstall(ctx, name); err != nil {
-				return errors.New("VMM service removal failed")
+			if observedService.State != "not-installed" {
+				if err := client.Uninstall(ctx, name); err != nil {
+					return errors.New("VMM service removal failed")
+				}
 			}
 			installed.Service = state.ServiceState{}
 		case tui.ServiceActionStart:
@@ -1475,7 +1486,7 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 		}
 		if request.ServiceAction == tui.ServiceActionInstall || request.ServiceAction == tui.ServiceActionUninstall || request.ServiceAction == tui.ServiceActionEnable || request.ServiceAction == tui.ServiceActionDisable {
 			if err := state.Save(c.options.StatePath, installed); err != nil {
-				rollbackErr := rollbackServiceAction(ctx, client, name, configRoot, previousService, serviceWasRunning, request.ServiceAction)
+				rollbackErr := rollbackServiceAction(ctx, client, name, configRoot, previousService, observedService, request.ServiceAction)
 				if rollbackErr != nil {
 					return errors.Join(errors.New("VMM service state could not be saved; native service rollback failed"), rollbackErr)
 				}
@@ -1542,9 +1553,9 @@ func validateServiceLoggingConfigured(configRoot string) error {
 	return nil
 }
 
-// rollbackServiceAction restores the prior native registration when a durable state write fails.
-// rollbackServiceAction 在持久化状态写入失败时恢复此前的系统服务注册。
-func rollbackServiceAction(ctx context.Context, client ServiceClient, name string, configRoot string, previous state.ServiceState, wasRunning bool, action tui.ServiceAction) error {
+// rollbackServiceAction uses the prior record and observed native status to compensate a failed state write; it returns a rollback error.
+// rollbackServiceAction 使用旧登记和操作前原生状态补偿失败的登记写入，并返回补偿错误。
+func rollbackServiceAction(ctx context.Context, client ServiceClient, name string, configRoot string, previous state.ServiceState, observed service.Status, action tui.ServiceAction) error {
 	switch action {
 	case tui.ServiceActionInstall:
 		if previous.Name != "" {
@@ -1552,20 +1563,64 @@ func rollbackServiceAction(ctx context.Context, client ServiceClient, name strin
 		}
 		return client.Uninstall(ctx, name)
 	case tui.ServiceActionUninstall:
-		if err := client.Install(ctx, previous.Name, configRoot, previous.User, previous.AutoStart); err != nil {
+		if observed.State == "not-installed" {
+			return nil
+		}
+		autoStart, err := serviceAutoStart(observed)
+		if err != nil {
 			return err
 		}
-		if wasRunning {
+		if err := client.Install(ctx, previous.Name, configRoot, previous.User, autoStart); err != nil {
+			return err
+		}
+		if observed.State == "running" {
 			return client.Start(ctx, previous.Name)
 		}
 		return nil
 	case tui.ServiceActionEnable:
+		enabled, err := serviceAutoStart(observed)
+		if err != nil || enabled {
+			return err
+		}
 		return client.Disable(ctx, name)
 	case tui.ServiceActionDisable:
+		enabled, err := serviceAutoStart(observed)
+		if err != nil || !enabled {
+			return err
+		}
 		return client.Enable(ctx, name)
 	default:
 		return errors.New("unsupported service rollback action")
 	}
+}
+
+// serviceAutoStart returns the observed boot policy from a VMM status or an error for unsupported and conflicting values.
+// serviceAutoStart 从 VMM 状态返回实际开机自启策略；遇到未知或互相矛盾的值时返回错误。
+func serviceAutoStart(status service.Status) (bool, error) {
+	var enabled bool
+	switch status.AutoStart {
+	case "true", "enabled":
+		enabled = true
+	case "false", "disabled":
+		enabled = false
+	default:
+		return false, errors.New("VMM service auto-start status is unsupported")
+	}
+	if status.StartType != "" {
+		switch status.StartType {
+		case "automatic":
+			if !enabled {
+				return false, errors.New("VMM service start policy is inconsistent")
+			}
+		case "manual", "disabled":
+			if enabled {
+				return false, errors.New("VMM service start policy is inconsistent")
+			}
+		default:
+			return false, errors.New("VMM service start policy is unsupported")
+		}
+	}
+	return enabled, nil
 }
 
 // pathAction applies one explicit PATH choice and persists its full reversal record.
