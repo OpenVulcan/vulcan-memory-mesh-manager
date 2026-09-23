@@ -221,6 +221,8 @@ func (m *Model) integrityIssueText(issue string) string {
 		return m.label("发现程序残留，但没有完成的安装登记，请重新安装。", "Program remnants exist without a completed registration; reinstall.")
 	case "service-unverified":
 		return m.label("无法验证系统服务登记，请检查服务及管理权限。", "The service registration could not be verified; check the service and administrative permissions.")
+	case "service-missing":
+		return m.label("系统服务尚未注册或已移除，请重新安装以恢复。", "The system service is not registered or was removed; reinstall to restore it.")
 	case "process-unverified":
 		return m.label("无法核对受管进程，请检查进程状态及访问权限。", "The managed process could not be checked; inspect its state and access permissions.")
 	default:

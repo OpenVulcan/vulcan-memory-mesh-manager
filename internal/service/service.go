@@ -509,6 +509,17 @@ func parseStatusOutputForPlatform(output string, platform string) (Status, error
 	if values["state"] == "" || values["auto_start"] == "" {
 		return Status{}, ErrInvalidStatus
 	}
+	// Absence has no account or native start-type fields; accept only the exact shared two-field contract.
+	// 服务不存在时没有账户或系统启动类型字段；只接受精确的双字段跨平台契约。
+	if values["state"] == "not-installed" {
+		if platform != "windows" && platform != "linux" && platform != "darwin" {
+			return Status{}, ErrInvalidStatus
+		}
+		if len(values) != 2 || values["auto_start"] != "false" {
+			return Status{}, ErrInvalidStatus
+		}
+		return Status{State: "not-installed", AutoStart: "false"}, nil
+	}
 	if values["state"] != "running" && values["state"] != "stopped" {
 		return Status{}, ErrInvalidStatus
 	}

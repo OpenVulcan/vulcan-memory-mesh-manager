@@ -139,3 +139,47 @@ func TestFailedReinstallRefreshesOpenUI(t *testing.T) {
 		t.Fatalf("open UI did not receive failed-install snapshot: %+v", snapshot)
 	}
 }
+
+// TestMissingServiceCanBeReinstalled exercises an interrupted registration and both requested execution modes.
+// TestMissingServiceCanBeReinstalled 验证服务注册中断后可重装为服务或命令行模式。
+func TestMissingServiceCanBeReinstalled(t *testing.T) {
+	for _, mode := range []tui.ServiceMode{tui.ServiceModeService, tui.ServiceModeForeground} {
+		t.Run(string(mode), func(t *testing.T) {
+			controller, plan, _ := newFixtureController(t)
+			for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+				if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+					t.Fatal("fixture install failed")
+				}
+			}
+			saved, err := state.Load(controller.options.StatePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved.Service.Name = "VulcanMemoryMesh"
+			saved.InstallationComplete = false
+			if err := state.Save(controller.options.StatePath, saved); err != nil {
+				t.Fatal(err)
+			}
+			adapter := &fakeService{status: service.Status{State: "not-installed", AutoStart: "false"}}
+			controller.options.ServiceFactory = func(string) (ServiceClient, error) { return adapter, nil }
+			snapshot, err := controller.Snapshot(context.Background())
+			if err != nil || snapshot.Installed || snapshot.IntegrityIssue != "service-missing" {
+				t.Fatalf("missing service misclassified: %+v %v", snapshot, err)
+			}
+			plan.Repair, plan.ServiceMode = true, mode
+			plan.ServiceUser = currentServiceUser(t)
+			for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+				if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+					t.Fatalf("repair failed at %s: %v", kind, adapter.calls)
+				}
+			}
+			snapshot, err = controller.Snapshot(context.Background())
+			if err != nil || !snapshot.Installed || snapshot.Incomplete || snapshot.ServiceMode != mode {
+				t.Fatalf("repair did not restore requested mode: %+v %v", snapshot, err)
+			}
+			if adapter.called("stop") {
+				t.Fatal("attempted to stop a service proven absent")
+			}
+		})
+	}
+}

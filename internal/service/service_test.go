@@ -44,6 +44,26 @@ const (
 	helperSecretEnvironment = "VMMM_SERVICE_TEST_SECRET"
 )
 
+// TestAbsentServiceProtocol accepts only the exact absent-service document on supported platforms.
+// TestAbsentServiceProtocol 在受支持平台仅接受精确的服务不存在协议文档。
+func TestAbsentServiceProtocol(t *testing.T) {
+	for _, platform := range []string{"windows", "linux", "darwin"} {
+		status, err := parseStatusOutputForPlatform("state=not-installed\nauto_start=false\n", platform)
+		if err != nil || status.State != "not-installed" || status.AutoStart != "false" {
+			t.Fatalf("%s absent service: %+v %v", platform, status, err)
+		}
+		for _, invalid := range []string{
+			"state=not-installed\nauto_start=enabled\n",
+			"state=not-installed\nauto_start=false\nuser=root\n",
+			"state=not-installed\n",
+		} {
+			if _, err := parseStatusOutputForPlatform(invalid, platform); err == nil {
+				t.Fatalf("%s accepted contradictory absence: %q", platform, invalid)
+			}
+		}
+	}
+}
+
 // init turns the test executable into a fake VMM binary only when the dedicated child-process variable is set.
 // init 仅在专用子进程环境变量存在时，将测试可执行文件切换为 fake VMM 程序。
 // The test runner itself starts without this variable, so ordinary package tests continue through testing.Main.

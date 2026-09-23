@@ -860,6 +860,9 @@ func (c *Controller) pauseInstalledRuntime(ctx context.Context, installed state.
 		if err != nil {
 			return nil, errors.New("existing VMM service status failed")
 		}
+		if status.State == "not-installed" {
+			return nil, nil
+		}
 		serviceUser := installed.Service.User
 		if status.User != "" {
 			if serviceUser != "" && runtime.GOOS != "windows" && serviceUser != status.User {
@@ -2345,6 +2348,10 @@ func (c *Controller) snapshot(ctx context.Context) (tui.InstallationSnapshot, er
 			return snapshot, nil
 		}
 		snapshot.ServiceState = status.State
+		if status.State == "not-installed" {
+			snapshot.Installed, snapshot.Incomplete, snapshot.IntegrityIssue = false, true, "service-missing"
+			return snapshot, nil
+		}
 		snapshot.AutoStart = strings.EqualFold(status.AutoStart, "true") || strings.EqualFold(status.AutoStart, "enabled") || strings.EqualFold(status.StartType, "automatic")
 		snapshot.Running = strings.EqualFold(status.State, "running")
 	} else if c.process != nil {
