@@ -30,6 +30,10 @@ jobs:
           go-version-file: go.mod
       - name: Go tests
         run: go test ./...
+      - name: Privileged Unix service account tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo -n "$(command -v go)" test ./internal/controller -count=1
       - name: Go vet
         run: go vet ./...
       - name: Build native manager
