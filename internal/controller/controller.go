@@ -3541,8 +3541,8 @@ func applyProviderPlan(editor *configflow.Editor, plan tui.ProviderPlan) error {
 	return nil
 }
 
-// applyEmbeddingProviderPatch changes only the wizard-owned identity and key fields, retaining independent VMM throughput settings.
-// applyEmbeddingProviderPatch 仅修改向导负责的供应商身份与密钥字段，保留独立的 VMM 吞吐设置。
+// applyEmbeddingProviderPatch changes the wizard-owned identity and keys, resetting nodes that would override the new key pool.
+// applyEmbeddingProviderPatch 修改向导负责的供应商身份与密钥，并清空会覆盖新密钥池的旧节点。
 func applyEmbeddingProviderPatch(editor *configflow.Editor, mapping *yaml.Node) error {
 	if mapping == nil || mapping.Kind != yaml.MappingNode {
 		return errors.New("embedding provider patch is invalid")
@@ -3572,6 +3572,11 @@ func applyEmbeddingProviderPatch(editor *configflow.Editor, mapping *yaml.Node) 
 	fragment, err := encodeYAMLNode(keys)
 	if err != nil || validateSensitiveReference("array", string(fragment)) != nil || editor.SetStructured("embedding.api_keys", fragment) != nil {
 		return errors.New("embedding API key references are invalid")
+	}
+	// Explicit nodes take precedence over top-level API keys in VMM, so the selected keys require an empty node list.
+	// VMM 的显式节点优先使用各自密钥；要让新选择的顶层密钥生效，必须清空旧节点列表。
+	if err := editor.SetStructured("embedding.nodes", []byte("[]\n")); err != nil {
+		return errors.New("embedding routing nodes could not be reset by the VMM schema")
 	}
 	return nil
 }

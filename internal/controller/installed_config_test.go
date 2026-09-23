@@ -27,6 +27,7 @@ func TestProviderWizardPreservesUnrelatedAdvancedFields(t *testing.T) {
 		configbridge.Field{Path: "embedding.provider", Type: "string"},
 		configbridge.Field{Path: "embedding.endpoint", Type: "string"},
 		configbridge.Field{Path: "embedding.api_keys", Type: "array", Sensitive: true},
+		configbridge.Field{Path: "embedding.nodes", Type: "array"},
 		configbridge.Field{Path: "embedding.model", Type: "string"},
 		configbridge.Field{Path: "embedding.dimension", Type: "integer"},
 		configbridge.Field{Path: "embedding.rpm", Type: "integer"},
@@ -35,7 +36,7 @@ func TestProviderWizardPreservesUnrelatedAdvancedFields(t *testing.T) {
 		configbridge.Field{Path: "rerank.routes", Type: "array"},
 		configbridge.Field{Path: "rerank.top_n", Type: "integer"},
 	)
-	before := []byte("embedding:\n  provider: openai\n  endpoint: https://old.example/v1\n  api_keys: [\"${OLD_KEY}\"]\n  model: old-model\n  dimension: 1024\n  rpm: 37\n  max_batch_size: 7\nrerank:\n  enabled: true\n  top_n: 14\n  routes:\n    - name: existing\n")
+	before := []byte("embedding:\n  provider: openai\n  endpoint: https://old.example/v1\n  api_keys: [\"${OLD_KEY}\"]\n  nodes:\n    - name: old-node\n      api_keys: [\"${OLD_NODE_KEY}\"]\n  model: old-model\n  dimension: 1024\n  rpm: 37\n  max_batch_size: 7\nrerank:\n  enabled: true\n  top_n: 14\n  routes:\n    - name: existing\n")
 	editor, err := configflow.New(schema, before)
 	if err != nil {
 		t.Fatal(err)
@@ -58,8 +59,12 @@ func TestProviderWizardPreservesUnrelatedAdvancedFields(t *testing.T) {
 			t.Fatalf("%s = %+v, %v; want %q", path, value, err, want)
 		}
 	}
-	if !bytes.Contains(after, []byte("${NEW_KEY}")) || bytes.Contains(after, []byte("${OLD_KEY}")) {
+	if !bytes.Contains(after, []byte("${NEW_KEY}")) || bytes.Contains(after, []byte("${OLD_KEY}")) || bytes.Contains(after, []byte("${OLD_NODE_KEY}")) {
 		t.Fatal("embedding API key references were not replaced")
+	}
+	nodes, err := draft.GetStructured("embedding.nodes", configedit.StructuredArray)
+	if err != nil || string(bytes.TrimSpace([]byte(nodes))) != "[]" {
+		t.Fatalf("old embedding routing nodes still override new keys: %q, %v", nodes, err)
 	}
 }
 

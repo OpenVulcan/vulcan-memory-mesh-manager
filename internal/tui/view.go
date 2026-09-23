@@ -446,7 +446,7 @@ func (m *Model) renderProviderWizard() []string {
 	notice := m.label("保存会以单条路由替换 LLM 路由列表；复杂路由请使用高级编辑器。", "Saving replaces the LLM route list with one route; use the advanced editor for complex routing.")
 	switch m.providerPurpose {
 	case ProviderPurposeEmbedding:
-		notice = m.label("保存仅更新 Embedding 供应商、端点、模型、维度和密钥；吞吐与节点设置保留。", "Saving updates only the embedding provider, endpoint, model, dimension, and keys; throughput and node settings stay.")
+		notice = m.label("保存更新 Embedding 供应商、端点、模型、维度和密钥；旧节点会清空，吞吐与批大小保留。", "Saving updates the embedding provider, endpoint, model, dimension, and keys; old nodes are cleared while throughput and batch size stay.")
 	case ProviderPurposeRerank:
 		notice = m.label("保存更新重排开关；选择新路由时替换路由列表，top_n 保留。复杂路由请使用高级编辑器。", "Saving updates rerank enablement; selecting a new route replaces the route list. top_n stays. Use the advanced editor for complex routing.")
 	}
