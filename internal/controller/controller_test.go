@@ -903,6 +903,58 @@ func TestUninstallWaitsForInstallLockBeforeServiceRemoval(t *testing.T) {
 	}
 }
 
+// TestUninstallRetriesAfterNativeServiceRemoval verifies an interrupted PATH cleanup can be retried without removing an absent service again.
+// TestUninstallRetriesAfterNativeServiceRemoval 验证 PATH 清理中断后可重试，且不会再次注销已不存在的系统服务。
+func TestUninstallRetriesAfterNativeServiceRemoval(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	plan.ServiceMode = tui.ServiceModeService
+	plan.ServiceUser = currentServiceUser(t)
+	plan.AddToPath = true
+	serviceAdapter := &fakeService{}
+	pathAdapter := &fakePath{}
+	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return serviceAdapter, nil }
+	controller.options.PathFactory = func() PathClient { return pathAdapter }
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("service and PATH fixture install failed at %s", kind)
+		}
+	}
+	receipt := pathRecordPath(controller.controlStateRoot())
+	receiptBytes, err := os.ReadFile(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(receipt); err != nil {
+		t.Fatal(err)
+	}
+	request := tui.OperationRequest{Kind: tui.OperationUninstall, Uninstall: tui.UninstallOptions{RemoveService: true, RemovePath: true, KeepConfig: true, KeepData: true}}
+	if terminalKind(collectOperation(t, controller, request)) != tui.OperationEventFailed {
+		t.Fatal("missing PATH receipt did not stop uninstall after native service removal")
+	}
+	if serviceAdapter.status.State != "not-installed" {
+		t.Fatalf("native service was not removed before PATH failure: %+v", serviceAdapter.status)
+	}
+	snapshot, err := controller.Snapshot(context.Background())
+	if err != nil || snapshot.Installed || !snapshot.Incomplete || snapshot.IntegrityIssue != "service-missing" {
+		t.Fatalf("failed uninstall was reported complete: %+v %v", snapshot, err)
+	}
+	if err := os.WriteFile(receipt, receiptBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if terminalKind(collectOperation(t, controller, request)) != tui.OperationEventCompleted {
+		t.Fatal("uninstall could not resume after restoring the PATH receipt")
+	}
+	uninstalls := 0
+	for _, call := range serviceAdapter.calls {
+		if call == "uninstall" {
+			uninstalls++
+		}
+	}
+	if uninstalls != 1 || pathAdapter.removes != 1 {
+		t.Fatalf("retry repeated native removal: service=%d PATH=%d", uninstalls, pathAdapter.removes)
+	}
+}
+
 // TestUninstallPreservedProgramKeepsConfigurationAndData verifies changed owned files cannot trigger destructive root cleanup.
 // TestUninstallPreservedProgramKeepsConfigurationAndData 验证受管程序已改变时，不会继续删除配置和数据库根目录。
 func TestUninstallPreservedProgramKeepsConfigurationAndData(t *testing.T) {
@@ -1101,7 +1153,7 @@ func (f *fakeService) Uninstall(context.Context, string) error {
 	if f.uninstallErr != nil {
 		return f.uninstallErr
 	}
-	f.status.State = "stopped"
+	f.status.State = "not-installed"
 	return nil
 }
 

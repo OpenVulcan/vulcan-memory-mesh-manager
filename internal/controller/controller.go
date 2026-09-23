@@ -1660,8 +1660,16 @@ func (c *Controller) prepareRuntimeRemoval(ctx context.Context, installed state.
 		if err != nil {
 			return serviceState, pathState, errors.New("VMM service control is unavailable")
 		}
-		if err := client.Uninstall(ctx, installed.Service.Name); err != nil {
-			return serviceState, pathState, errors.New("VMM service removal failed")
+		// A prior attempt may have removed the native service before PATH cleanup failed.
+		// 上次尝试可能已注销系统服务，但随后 PATH 清理失败；重试时先核对真实服务状态。
+		status, err := client.GetStatus(ctx, installed.Service.Name)
+		if err != nil {
+			return serviceState, pathState, errors.New("VMM service status could not be checked before removal")
+		}
+		if status.State != "not-installed" {
+			if err := client.Uninstall(ctx, installed.Service.Name); err != nil {
+				return serviceState, pathState, errors.New("VMM service removal failed")
+			}
 		}
 		serviceState = state.ServiceState{}
 	} else if c.process != nil {
