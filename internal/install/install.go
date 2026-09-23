@@ -581,11 +581,16 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 		pending = oldState
 	}
 	pending.InstallationComplete = false
-	if err := saveStateWithPreparation(request.StatePath, request.Paths.DataRoot, pending); err != nil {
-		return Result{}, err
+	if registered {
+		if err := saveStateWithPreparation(request.StatePath, request.Paths.DataRoot, pending); err != nil {
+			return Result{}, err
+		}
 	}
+	// Only undo a registration written by this attempt, including failures before the first registration exists.
+	// 仅撤销本次尝试写入的登记，首次登记尚未写入就失败时不删除状态路径。
+	registrationWritten := registered
 	defer func() {
-		if !retained && !transaction.committed && transaction.rollbackErr == nil {
+		if registrationWritten && !retained && !transaction.committed && transaction.rollbackErr == nil {
 			if registered {
 				_ = state.Save(request.StatePath, oldState)
 			} else {
@@ -601,6 +606,14 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 	}
 	if err := assignServiceConfigOwnership(request, configFiles); err != nil {
 		return Result{}, transaction.fail(err)
+	}
+	if !registered {
+		// Publish first-install registration only after its configuration exists, before copying any program files.
+		// 首次安装在配置已存在后、复制任何程序文件之前才写入登记，避免中断后要求恢复从未生成的原配置。
+		if err := saveStateWithPreparation(request.StatePath, request.Paths.DataRoot, pending); err != nil {
+			return Result{}, transaction.fail(err)
+		}
+		registrationWritten = true
 	}
 	if err := applyProgramFiles(request.Paths.ProgramRoot, oldState, registered, files, transaction); err != nil {
 		return Result{}, transaction.fail(err)
