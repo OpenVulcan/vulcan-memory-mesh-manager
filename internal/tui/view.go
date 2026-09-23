@@ -22,10 +22,10 @@ func (m *Model) render() string {
 		strings.Repeat("-", m.renderWidth()),
 	}
 	if m.status != "" {
-		header = append(header, m.status)
+		header = append(header, m.operationText(m.status))
 	}
 	if m.errorMessage != "" {
-		header = append(header, m.label("错误：", "Error: ")+m.errorMessage)
+		header = append(header, m.label("错误：", "Error: ")+m.operationText(m.errorMessage))
 	}
 	header = wrapProse(header, m.renderWidth())
 	page := wrapProse(m.renderPage(), m.renderWidth())
@@ -170,7 +170,7 @@ func (m *Model) renderHome() []string {
 		m.label("状态：", "Status: ") + status,
 		m.label("VMM 版本：", "VMM version: ") + valueOrDash(snapshot.VMMVersion),
 		m.label("存储：", "Storage: ") + string(snapshot.Storage),
-		m.label("服务：", "Service: ") + valueOrDash(snapshot.ServiceState),
+		m.label("服务：", "Service: ") + valueOrDash(m.operationText(snapshot.ServiceState)),
 		m.label("配置根：", "Config root: ") + valueOrDash(snapshot.ConfigRoot),
 		m.label("数据根：", "Data root: ") + valueOrDash(snapshot.DataRoot),
 		"",
@@ -207,7 +207,7 @@ func (m *Model) renderSource() []string {
 			state = m.label("可用", "available")
 		}
 		if source.ProbeMessage != "" {
-			state = source.ProbeMessage
+			state = m.operationText(source.ProbeMessage)
 		}
 		lines = append(lines, m.option(index, name+" ["+state+"]"))
 	}
@@ -337,7 +337,7 @@ func (m *Model) renderProviders() []string {
 		lines = append(lines, "  "+field.Path+" = "+value)
 	}
 	if m.configFields.Summary != "" {
-		lines = append(lines, m.configFields.Summary)
+		lines = append(lines, m.operationText(m.configFields.Summary))
 	}
 	return lines
 }
@@ -515,7 +515,7 @@ func (m *Model) renderService() []string {
 	lines := []string{
 		m.text(i18n.KeyServiceTitle, nil),
 		m.option(0, m.text(i18n.KeyServiceCLI, nil)),
-		m.option(1, m.text(i18n.KeyServiceMode, nil)+" (manual start)"),
+		m.option(1, m.text(i18n.KeyServiceMode, nil)+m.label("（手动启动）", " (manual start)")),
 		m.option(2, m.text(i18n.KeyServiceMode, nil)+" + "+m.text(i18n.KeyServiceAutoStart, nil)),
 	}
 	if m.serviceUserVisible() {
@@ -555,7 +555,7 @@ func (m *Model) renderConfigCheck() []string {
 	if m.validation.Valid {
 		state = m.label("校验通过", "Valid")
 	} else if m.validation.Summary != "" {
-		state = m.validation.Summary
+		state = m.operationText(m.validation.Summary)
 	}
 	lines := []string{
 		m.label("配置检查", "Configuration check"),
@@ -601,7 +601,7 @@ func (m *Model) renderRunning() []string {
 	return []string{
 		m.label("VMM 已安装", "VMM installed"),
 		m.label("运行状态：", "Runtime: ") + boolState(m.snapshot.Running, m.label("运行中", "running"), m.label("已停止", "stopped")),
-		m.label("服务状态：", "Service: ") + valueOrDash(m.snapshot.ServiceState),
+		m.label("服务状态：", "Service: ") + valueOrDash(m.operationText(m.snapshot.ServiceState)),
 		m.option(0, m.text(i18n.KeyServiceStart, nil)),
 		m.option(1, m.text(i18n.KeyServiceStop, nil)),
 		m.option(2, m.text(i18n.KeyServiceRestart, nil)),
@@ -629,9 +629,9 @@ func (m *Model) renderUninstall() []string {
 func (m *Model) renderProgress() string {
 	progress := m.progress
 	if progress.Total > 0 {
-		return fmt.Sprintf("[%s] %s (%d/%d)", progress.Stage, progress.Message, progress.Current, progress.Total)
+		return fmt.Sprintf("[%s] %s (%d/%d)", m.operationText(progress.Stage), m.operationText(progress.Message), progress.Current, progress.Total)
 	}
-	return fmt.Sprintf("[%s] %s", progress.Stage, progress.Message)
+	return fmt.Sprintf("[%s] %s", m.operationText(progress.Stage), m.operationText(progress.Message))
 }
 
 // footer explains the small keyboard contract shared by every page.
