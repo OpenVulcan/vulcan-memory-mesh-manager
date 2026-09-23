@@ -28,6 +28,7 @@ import (
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configedit"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/download"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/fetch"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/install"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/manifest"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/pathctl"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/platform"
@@ -1201,6 +1202,42 @@ func fixtureInstallBase(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	return base
+}
+
+// TestPrivilegedServiceCommitContract verifies the exact privileged package transaction without hiding its error.
+// TestPrivilegedServiceCommitContract 直接验证提权安装事务，并在失败时保留精确错误原因。
+func TestPrivilegedServiceCommitContract(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() != 0 {
+		t.Skip("requires a root Unix test process")
+	}
+	controller, plan, _ := newFixtureController(t)
+	plan.ServiceMode = tui.ServiceModeService
+	plan.ServiceUser = currentServiceUser(t)
+	events := make(chan tui.OperationEvent, 32)
+	if err := controller.stagePackage(context.Background(), plan, events); err != nil {
+		t.Fatalf("stagePackage() error = %v", err)
+	}
+	prepared, err := controller.matchStaged(plan)
+	if err != nil {
+		t.Fatalf("matchStaged() error = %v", err)
+	}
+	defer prepared.prepared.Close()
+	configFiles, err := controller.buildConfigFiles(context.Background(), plan, prepared.packageData.Root)
+	if err != nil {
+		t.Fatalf("buildConfigFiles() error = %v", err)
+	}
+	request := install.Request{
+		ManagerRoot: controller.options.ManagerRoot, Operation: prepared.operation,
+		ManagerVersion: controller.options.ManagerVersion, Manifest: prepared.release.Manifest,
+		Artifact: prepared.artifact, Package: prepared.packageData, Expected: prepared.expected,
+		Paths:     state.InstallPaths{ProgramRoot: plan.ProgramRoot, ConfigRoot: plan.ConfigRoot, DataRoot: plan.DataRoot},
+		StatePath: controller.options.StatePath, Source: sourceState(plan.Source.Source),
+		Service: serviceStateForPlan(plan, controller.options.ServiceName), PATH: emptyPATHState(),
+		ConfigFiles: configFiles, ValidateConfig: controller.validateFunc(),
+	}
+	if _, err := prepared.prepared.CommitInstall(context.Background(), request); err != nil {
+		t.Fatalf("CommitInstall() error = %v", err)
+	}
 }
 
 // currentServiceUser returns the account that owns test-created configuration and data roots.
