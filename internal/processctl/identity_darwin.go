@@ -27,6 +27,11 @@ func inspectProcess(pid int) (processSnapshot, error) {
 		}
 		return processSnapshot{}, ErrIdentityUnverified
 	}
+	// XNU reports SZOMB as 5 while the parent still owns the exited process; argv is no longer available then.
+	// XNU 在父进程尚未回收已退出进程时用状态值 5 表示 SZOMB，此时 argv 已不可读取。
+	if info.Proc.P_stat == 5 {
+		return processSnapshot{}, ErrNotRunning
+	}
 	arguments, err := darwinArguments(pid)
 	if err != nil {
 		return processSnapshot{}, ErrIdentityUnverified
