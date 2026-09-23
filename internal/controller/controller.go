@@ -659,10 +659,10 @@ func (c *Controller) OpenProviderWizard(ctx context.Context, request tui.Provide
 
 // run dispatches one request and converts every internal error into a safe terminal event.
 // run 分发一个请求，并将所有内部错误转换为安全的终止事件。
-func (c *Controller) run(ctx context.Context, request tui.OperationRequest, events chan<- tui.OperationEvent) {
+func (c *Controller) run(ctx context.Context, request tui.OperationRequest, events chan tui.OperationEvent) {
 	defer close(events)
 	if err := ctx.Err(); err != nil {
-		c.emit(events, tui.OperationEvent{Kind: tui.OperationEventCancelled, Message: "Operation cancelled"})
+		c.emitTerminal(events, tui.OperationEvent{Kind: tui.OperationEventCancelled, Message: "Operation cancelled"})
 		return
 	}
 	var err error
@@ -706,7 +706,7 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 		err = errors.New("unsupported controller operation")
 	}
 	if err == nil {
-		c.emit(events, tui.OperationEvent{Kind: tui.OperationEventCompleted, Message: "Operation completed"})
+		c.emitTerminal(events, tui.OperationEvent{Kind: tui.OperationEventCompleted, Message: "Operation completed"})
 		return
 	}
 	if request.Kind == tui.OperationInstall || request.Kind == tui.OperationService || request.Kind == tui.OperationPath || request.Kind == tui.OperationUninstall {
@@ -720,10 +720,10 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 		}
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
-		c.emit(events, tui.OperationEvent{Kind: tui.OperationEventCancelled, Message: "Operation cancelled"})
+		c.emitTerminal(events, tui.OperationEvent{Kind: tui.OperationEventCancelled, Message: "Operation cancelled"})
 		return
 	}
-	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventFailed, Message: safeOperationError(err), Retryable: request.Kind != tui.OperationTestProvider})
+	c.emitTerminal(events, tui.OperationEvent{Kind: tui.OperationEventFailed, Message: safeOperationError(err), Retryable: request.Kind != tui.OperationTestProvider})
 }
 
 // probeSource checks only the selected source and discovers its latest authenticated release.
@@ -2614,6 +2614,23 @@ func (c *Controller) emit(events chan<- tui.OperationEvent, event tui.OperationE
 	case events <- event:
 	default:
 	}
+}
+
+// emitTerminal guarantees the one operation outcome fits in the stream even when optional progress filled its buffer.
+// emitTerminal 保证单个操作结果进入事件流；可选进度占满缓冲区时，仅丢弃最早的一条进度。
+func (c *Controller) emitTerminal(events chan tui.OperationEvent, event tui.OperationEvent) {
+	select {
+	case events <- event:
+		return
+	default:
+	}
+	// Only the operation goroutine sends to this channel, so freeing one slot guarantees the terminal send can finish.
+	// 此通道仅由当前操作协程发送，因此腾出一个位置后终止事件一定能够写入。
+	select {
+	case <-events:
+	default:
+	}
+	events <- event
 }
 
 // safeOperationError converts internal failures to stable user-facing text.

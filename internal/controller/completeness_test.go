@@ -24,6 +24,44 @@ func TestSnapshotWithoutInstallation(t *testing.T) {
 	}
 }
 
+// TestTerminalOutcomeSurvivesFullProgressBuffer proves a slow TUI still receives one truthful outcome after optional progress fills the stream.
+// TestTerminalOutcomeSurvivesFullProgressBuffer 验证可选进度填满事件流后，较慢的界面仍会收到唯一且真实的操作结果。
+func TestTerminalOutcomeSurvivesFullProgressBuffer(t *testing.T) {
+	controller, _, _ := newFixtureController(t)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, test := range []struct {
+		name    string
+		ctx     context.Context
+		kind    tui.OperationKind
+		outcome tui.OperationEventKind
+	}{
+		{name: "completed", ctx: context.Background(), kind: tui.OperationRefresh, outcome: tui.OperationEventCompleted},
+		{name: "failed", ctx: context.Background(), kind: tui.OperationKind("unsupported"), outcome: tui.OperationEventFailed},
+		{name: "cancelled", ctx: cancelled, kind: tui.OperationRefresh, outcome: tui.OperationEventCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			events := make(chan tui.OperationEvent, 16)
+			for range cap(events) {
+				events <- tui.OperationEvent{Kind: tui.OperationEventProgress}
+			}
+			controller.run(test.ctx, tui.OperationRequest{Kind: test.kind}, events)
+			terminalCount := 0
+			for event := range events {
+				if event.Kind != tui.OperationEventProgress {
+					terminalCount++
+					if event.Kind != test.outcome {
+						t.Fatalf("terminal outcome = %s, want %s", event.Kind, test.outcome)
+					}
+				}
+			}
+			if terminalCount != 1 {
+				t.Fatalf("terminal outcomes = %d, want exactly one", terminalCount)
+			}
+		})
+	}
+}
+
 // TestIncompleteInstallationCanReinstall checks missing files, changed registered bytes, and an unfinished completion marker.
 // TestIncompleteInstallationCanReinstall 检查文件缺失、已登记内容损坏及完成标记未写入三种情况。
 func TestIncompleteInstallationCanReinstall(t *testing.T) {

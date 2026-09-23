@@ -100,8 +100,8 @@ type InstallPaths struct {
 	// ConfigRoot 是包含用户配置文件的配置目录。
 	ConfigRoot string `json:"config_root"`
 
-	// DataRoot is the directory containing runtime data and the registration file.
-	// DataRoot 是包含运行时数据和登记文件的数据目录。
+	// DataRoot contains VMM runtime data; manager registration lives in its separate control state root.
+	// DataRoot 保存 VMM 运行时数据；管理器登记位于独立的控制状态根目录。
 	DataRoot string `json:"data_root"`
 }
 
