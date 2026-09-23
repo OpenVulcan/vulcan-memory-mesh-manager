@@ -30,6 +30,16 @@ func TestConfigBridgeHelperProcess(t *testing.T) {
 	}
 	exitCode := 0
 	switch mode {
+	case "effective":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","redacted":true,"config":{"grpc":{"listen_addr":"127.0.0.1:17625"},"embedding":{"model":"effective-model"}}}`)
+	case "effective-unredacted":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","redacted":false,"config":{"embedding":{"model":"test"}}}`)
+	case "effective-version":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v2","redacted":true,"config":{"embedding":{"model":"test"}}}`)
+	case "effective-empty":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","redacted":true,"config":{}}`)
+	case "effective-duplicate":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","redacted":true,"config":{"grpc":{"listen_addr":"a","listen_addr":"b"}}}`)
 	case "health-ok":
 		_, _ = fmt.Fprintln(os.Stdout, `{"status":"ok","class":"ok","elapsed_ms":1}`)
 	case "health-unreachable":

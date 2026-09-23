@@ -395,6 +395,11 @@ func decodeStrictDocument(data []byte, destination any, required map[string]bool
 // requireObjectArray 确认根对象中的集合成员是数组，而不是 null。
 func requireObjectArray(root map[string]json.RawMessage, destination any) error {
 	switch destination.(type) {
+	case *EffectiveConfig:
+		var config map[string]json.RawMessage
+		if err := json.Unmarshal(root["config"], &config); err != nil || len(config) == 0 {
+			return errors.New("config must be a nonempty JSON object")
+		}
 	case *Schema:
 		if !isJSONArray(root["fields"]) {
 			return errors.New("fields must be a JSON array")

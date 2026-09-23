@@ -1058,7 +1058,7 @@ func runConfigCommand(args []string, options commandOptions, environment command
 		}
 		return 0
 	case "show-effective":
-		result, err := runtimeValue.controller.OpenConfigFields(ctx, tui.ConfigFieldsRequest{Prefix: ""})
+		result, err := bridge.Effective(ctx)
 		if err != nil {
 			writeError(environment.stderr, err)
 			return 1
@@ -1066,8 +1066,10 @@ func runConfigCommand(args []string, options commandOptions, environment command
 		if options.JSON {
 			return encodeJSON(environment.stdout, result)
 		}
-		for _, field := range result.Fields {
-			_, _ = fmt.Fprintf(environment.stdout, "%s=%s\n", field.Path, field.Value)
+		encoder := json.NewEncoder(environment.stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(result); err != nil {
+			return 1
 		}
 		return 0
 	}
