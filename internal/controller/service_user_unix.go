@@ -231,8 +231,8 @@ func checkServiceObject(info os.FileInfo, uid uint64, writable bool, rootOwned b
 	return nil
 }
 
-// checkServiceDirectoryAncestor checks traversal permissions without assuming group membership.
-// checkServiceDirectoryAncestor 检查祖先遍历权限，避免猜测服务账户的组成员关系。
+// checkServiceDirectoryAncestor checks execute traversal on ancestors; the requested leaf is checked separately for read access.
+// checkServiceDirectoryAncestor 检查祖先目录的执行穿越权限；请求的叶对象另行检查读取权限。
 func checkServiceDirectoryAncestor(info os.FileInfo, uid uint64, leaf bool, writable bool) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
@@ -240,7 +240,7 @@ func checkServiceDirectoryAncestor(info os.FileInfo, uid uint64, leaf bool, writ
 	}
 	mode := info.Mode().Perm()
 	if uint64(stat.Uid) == uid {
-		if mode&0500 != 0500 {
+		if mode&0100 == 0 {
 			return errors.New("service ancestor permissions are insufficient")
 		}
 		if leaf && writable && mode&0200 == 0 {
@@ -250,7 +250,7 @@ func checkServiceDirectoryAncestor(info os.FileInfo, uid uint64, leaf bool, writ
 	}
 	// For an unknown group membership, only explicit other permissions are safe to rely on.
 	// 对未知组成员关系，只能安全依赖明确的 other 权限位。
-	if mode&0005 != 0005 {
+	if mode&0001 == 0 {
 		return errors.New("service ancestor is not traversable by service user")
 	}
 	if leaf && writable && mode&0002 == 0 {

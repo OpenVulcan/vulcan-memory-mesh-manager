@@ -38,8 +38,6 @@ func secureFile(path string) error {
 	// exec.Command passes each argument directly to CreateProcess; no shell parses user input.
 	// exec.Command 将每个参数直接传给 CreateProcess，不经过 shell 解析用户输入。
 	for _, args := range commands {
-		// exec.Command passes each argument directly to CreateProcess; no shell parses user input.
-		// exec.Command 将每个参数直接传给 CreateProcess，不经过 shell 解析用户输入。
 		if err := exec.Command(icacls, args...).Run(); err != nil {
 			return errors.New("could not restrict dotenv ACL")
 		}

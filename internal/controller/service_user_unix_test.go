@@ -26,4 +26,15 @@ func TestValidateServicePathAccessDefersMissingLeafWrite(t *testing.T) {
 	if err := validateServicePathAccess(parent, uint64(os.Getuid()), true, false); err == nil {
 		t.Fatal("existing service root without write permission was accepted")
 	}
+	// A known missing child needs traversal through its parent, not directory listing permission.
+	// 已知的缺失子路径只需穿越父目录，无需列出父目录内容。
+	if err := os.Chmod(parent, 0o100); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateServicePathAccess(missing, uint64(os.Getuid()), true, false); err != nil {
+		t.Fatalf("traversable administrator-prepared root rejected: %v", err)
+	}
+	if err := validateServicePathAccess(parent, uint64(os.Getuid()), false, false); err == nil {
+		t.Fatal("existing unreadable service root was accepted")
+	}
 }
