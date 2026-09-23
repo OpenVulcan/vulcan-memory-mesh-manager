@@ -185,6 +185,31 @@ func TestProviderWizardAndCredentials(t *testing.T) {
 // TestStageValidateCommitAndCredentialApply 覆盖完整的两阶段暂存、校验、提交和凭据写入事务。
 func TestStageValidateCommitAndCredentialApply(t *testing.T) {
 	controller, plan, fixture := newFixtureController(t)
+	// Existing rules and credentials must reach validation without receiving draft changes on disk.
+	// 现有规则及凭据必须参与候选校验，同时磁盘上的正式配置不能提前接收草稿变更。
+	rulePath := filepath.Join(plan.ConfigRoot, "noise_rules", "custom.yaml")
+	if err := os.MkdirAll(filepath.Dir(rulePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rulePath, []byte("rule: preserved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalCredential := []byte("UNCHANGED_KEY=existing-value\n")
+	if err := os.WriteFile(filepath.Join(plan.ConfigRoot, ".env"), originalCredential, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	validate := controller.options.Validate
+	controller.options.Validate = func(ctx context.Context, binaryPath, root string) (configbridge.ValidationResult, error) {
+		data, err := os.ReadFile(filepath.Join(root, ".env"))
+		if err != nil || !bytes.Contains(data, []byte("provider-secret-value")) || !bytes.Contains(data, []byte("existing-value")) {
+			return configbridge.ValidationResult{}, errors.New("candidate credentials are incomplete")
+		}
+		rule, err := os.ReadFile(filepath.Join(root, "noise_rules", "custom.yaml"))
+		if err != nil || string(rule) != "rule: preserved\n" {
+			return configbridge.ValidationResult{}, errors.New("candidate rule override is missing")
+		}
+		return validate(ctx, binaryPath, root)
+	}
 	plan.Providers = tui.ProviderPlan{
 		LLMRoutes: []tui.ProviderRoute{{
 			Provider:               "openrouter",
@@ -220,6 +245,9 @@ func TestStageValidateCommitAndCredentialApply(t *testing.T) {
 	}
 	if _, err := os.Stat(plan.ProgramRoot); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("program root after candidate validation = %v, want missing", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(plan.ConfigRoot, ".env")); err != nil || !bytes.Equal(data, originalCredential) {
+		t.Fatal("candidate validation modified installed credentials")
 	}
 
 	installEvents := collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationInstall, Plan: plan})

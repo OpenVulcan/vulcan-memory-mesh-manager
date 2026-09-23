@@ -171,6 +171,7 @@ func (m *Model) renderHome() []string {
 		m.text(i18n.KeyNavConfigure, nil),
 		m.text(i18n.KeyDownloadSource, map[string]string{"source": m.sourceLabel(m.selectedSource)}),
 		m.text(i18n.KeyUninstallTitle, nil),
+		m.label("回滚到指定版本", "Roll back to a selected release"),
 	} {
 		lines = append(lines, m.option(index, item))
 	}

@@ -422,6 +422,9 @@ type StagedPackage struct {
 // InstallPlan contains all values collected before the final confirmation page.
 // InstallPlan 包含最终确认前收集的全部安装值。
 type InstallPlan struct {
+	// Rollback permits a deliberately selected older signed runtime release.
+	// Rollback 允许使用用户明确选择的旧版签名运行时发行包。
+	Rollback bool
 	// Source is the selected VMM download source.
 	// Source 是选择的 VMM 下载源。
 	Source SourceOption
@@ -481,6 +484,9 @@ type InstallationSnapshot struct {
 	// SourceID is the persisted source identity.
 	// SourceID 是持久化的下载源标识。
 	SourceID string
+	// SourcePrefix restores the selected custom HTTPS proxy after reopening the manager.
+	// SourcePrefix 在重新打开管理器后恢复已选的自定义 HTTPS 代理。
+	SourcePrefix string
 	// ProgramRoot is the installed program root.
 	// ProgramRoot 是已安装程序根目录。
 	ProgramRoot string
@@ -662,6 +668,9 @@ type CredentialUpdate struct {
 // ProviderPlan contains all typed provider routes and protected credential updates.
 // ProviderPlan 包含全部强类型供应商路由和受保护的凭据更新。
 type ProviderPlan struct {
+	// RerankConfigured distinguishes an explicit disabled choice from an untouched reranker.
+	// RerankConfigured 区分明确禁用重排与尚未修改重排配置。
+	RerankConfigured bool
 	// LLMRoutes replaces the explicit LLM route list when the wizard saves LLM.
 	// LLMRoutes 在 LLM 向导保存时替换明确的 LLM 路由列表。
 	LLMRoutes []ProviderRoute
@@ -818,6 +827,9 @@ type Localizer interface {
 // ModelConfig supplies dependencies and initial state to NewModel.
 // ModelConfig 为 NewModel 提供依赖和初始状态。
 type ModelConfig struct {
+	// EntryAction selects an explicit CLI configuration, upgrade, or rollback entry.
+	// EntryAction 选择命令行明确请求的配置、升级或回滚入口。
+	EntryAction string
 	// Controller performs all network and system operations.
 	// Controller 执行全部网络和系统操作。
 	Controller Controller

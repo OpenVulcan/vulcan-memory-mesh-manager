@@ -1678,6 +1678,22 @@ func prepareConfigValidationRoot(request Request, transaction *fileTransaction) 
 	return validationRoot, configPaths, cleanup, nil
 }
 
+// PrepareCandidateConfig copies an existing override tree and overlays files in a private staging directory; callers must invoke cleanup.
+// PrepareCandidateConfig 在私有暂存目录复制现有覆盖树并叠加文件；调用方必须执行返回的清理函数。
+func PrepareCandidateConfig(configRoot, stagingParent string, files map[string][]byte) (string, func(), error) {
+	if err := validateDirectoryPath("config root", configRoot); err != nil {
+		return "", func() {}, err
+	}
+	if err := validateDirectoryPath("staging parent", stagingParent); err != nil {
+		return "", func() {}, err
+	}
+	if err := validateConfigFiles(files); err != nil {
+		return "", func() {}, err
+	}
+	root, _, cleanup, err := prepareConfigValidationRoot(Request{Paths: state.InstallPaths{ConfigRoot: configRoot}, ConfigFiles: files}, &fileTransaction{root: stagingParent})
+	return root, cleanup, err
+}
+
 // validateCandidateConfig invokes the runtime validator before any program promotion.
 // validateCandidateConfig 在程序包正式替换前调用运行时校验器。
 func validateCandidateConfig(ctx context.Context, request Request, transaction *fileTransaction, validationRoot string) error {

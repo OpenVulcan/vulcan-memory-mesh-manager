@@ -5,6 +5,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -19,6 +20,12 @@ import (
 // Model is the Bubble Tea state machine for first install and installed management.
 // Model 是首次安装与已安装管理使用的 Bubble Tea 状态机。
 type Model struct {
+	// editingInstalled stages the installed signed version before entering its configuration editor.
+	// editingInstalled 在进入配置编辑器前暂存当前已安装的签名版本。
+	editingInstalled bool
+	// registeringService requires account confirmation for the installed-page service action.
+	// registeringService 要求已安装页面的服务注册操作先确认账户。
+	registeringService bool
 	// controller owns every operation that can block or mutate the machine.
 	// controller 负责所有可能阻塞或修改机器状态的操作。
 	controller Controller
@@ -286,6 +293,20 @@ func NewModel(config ModelConfig) *Model {
 	}
 	model.plan.Source = model.sourceAt(0)
 	model.selectedSource = model.sourceAt(0)
+	if snapshot.Installed {
+		if snapshot.SourcePrefix != "" {
+			if source, err := download.NewCustomProxy(snapshot.SourcePrefix); err == nil {
+				model.sources = append(model.sources, SourceOption{Source: source, DisplayName: source.Name})
+			}
+		}
+		for _, source := range model.sources {
+			if string(source.Source.ID) == snapshot.SourceID {
+				model.plan.Source = source
+				model.selectedSource = source
+				break
+			}
+		}
+	}
 	if model.plan.Storage.Mode == "" {
 		model.plan.Storage = storage[0]
 	}
@@ -314,6 +335,17 @@ func NewModel(config ModelConfig) *Model {
 	model.plan.ServiceMode = model.serviceMode
 	model.plan.AutoStart = model.autoStart
 	model.plan.AddToPath = model.addToPath
+	if snapshot.Installed {
+		switch config.EntryAction {
+		case "edit":
+			model.editingInstalled = true
+			model.plan.Version = VersionOption{Tag: snapshot.VMMVersion, Available: true}
+			model.setScreen(ScreenSource)
+		case "upgrade", "rollback":
+			model.plan.Rollback = config.EntryAction == "rollback"
+			model.setScreen(ScreenSource)
+		}
+	}
 	return model
 }
 
@@ -498,6 +530,11 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 	case ScreenService:
 		m.setScreen(ScreenProviders)
 	case ScreenServiceUser:
+		if m.registeringService {
+			m.registeringService = false
+			m.setScreen(ScreenHome)
+			return m, nil
+		}
 		m.setScreen(ScreenService)
 	case ScreenPath:
 		m.setScreen(ScreenService)
@@ -612,6 +649,10 @@ func (m *Model) activateTextInput() (tea.Model, tea.Cmd) {
 		}
 		m.plan.ServiceUser = value
 		m.invalidateValidation()
+		if m.registeringService {
+			m.registeringService = false
+			return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionInstall, TargetMode: ServiceModeService, Plan: m.plan})
+		}
 		m.setScreen(ScreenPath)
 	case ScreenInstallPath:
 		switch m.inputField {
@@ -619,6 +660,8 @@ func (m *Model) activateTextInput() (tea.Model, tea.Cmd) {
 			m.plan.ProgramRoot = value
 		case 1:
 			m.plan.ConfigRoot = value
+			m.plan.Providers.CredentialPath = filepath.Join(value, ".env")
+			m.plan.StorageSettings.PostgreSQLCredentialPath = filepath.Join(value, ".env")
 		case 2:
 			m.plan.DataRoot = value
 		}
@@ -846,6 +889,10 @@ func (m *Model) activateProviderFieldSelection() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	key := keys[m.cursor]
+	if key == "credential_path" {
+		m.status = m.label("凭据路径由所选配置根确定", "Credential path follows the selected configuration root")
+		return m, nil
+	}
 	if key == "enabled" {
 		m.providerDraft.Enabled = !m.providerDraft.Enabled
 		return m, nil
@@ -967,6 +1014,7 @@ func (m *Model) saveProviderDraft() tea.Cmd {
 	case ProviderPurposeEmbedding:
 		m.plan.Providers.Embedding = &route
 	case ProviderPurposeRerank:
+		m.plan.Providers.RerankConfigured = true
 		m.plan.Providers.RerankEnabled = m.providerDraft.Enabled
 		if m.providerDraft.Enabled {
 			m.plan.Providers.RerankRoutes = []ProviderRoute{route}
@@ -1021,6 +1069,7 @@ func (m *Model) beginProviderWizard(purpose ProviderPurpose) tea.Cmd {
 	m.retryable = false
 	m.providerPurpose = purpose
 	draft := m.providerDraftForPurpose(purpose)
+	draft.CredentialPath = filepath.Join(m.plan.ConfigRoot, ".env")
 	draft.APIKeyValue = ""
 	request := ProviderWizardRequest{Purpose: purpose, Draft: draft}
 	return func() tea.Msg {
@@ -1205,6 +1254,7 @@ func upsertCredentialUpdate(existing []CredentialUpdate, update CredentialUpdate
 // openStorageCredential 准备 PostgreSQL 或 ParadeDB 凭据表单。
 func (m *Model) openStorageCredential() {
 	settings := m.plan.StorageSettings
+	settings.PostgreSQLCredentialPath = filepath.Join(m.plan.ConfigRoot, ".env")
 	m.storageCredential = StorageCredentialDraft{
 		Variable:           settings.PostgreSQLDSNVariable,
 		OriginalVariable:   settings.PostgreSQLDSNVariable,
@@ -1228,6 +1278,10 @@ func (m *Model) activateStorageCredentialSelection() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.cursor < 0 || m.cursor >= len(keys) {
+		return m, nil
+	}
+	if keys[m.cursor] == "path" {
+		m.status = m.label("凭据路径由所选配置根确定", "Credential path follows the selected configuration root")
 		return m, nil
 	}
 	m.storageEditingField = m.cursor
@@ -1421,7 +1475,13 @@ func (m *Model) activateHomeSelection() (tea.Model, tea.Cmd) {
 	case 2:
 		return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionRestart, TargetMode: m.snapshot.ServiceMode})
 	case 3:
-		return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionInstall, TargetMode: m.snapshot.ServiceMode})
+		if m.serviceUserVisible() {
+			m.registeringService = true
+			m.setScreen(ScreenServiceUser)
+			m.input = m.plan.ServiceUser
+			return m, nil
+		}
+		return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionInstall, TargetMode: ServiceModeService, Plan: m.plan})
 	case 4:
 		return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionUninstall, TargetMode: m.snapshot.ServiceMode})
 	case 5:
@@ -1429,11 +1489,21 @@ func (m *Model) activateHomeSelection() (tea.Model, tea.Cmd) {
 	case 6:
 		return m, m.beginOperation(OperationRequest{Kind: OperationService, ServiceAction: ServiceActionDisable, TargetMode: m.snapshot.ServiceMode})
 	case 7:
-		m.setScreen(ScreenProviders)
+		m.editingInstalled = true
+		m.plan.Rollback = false
+		m.plan.Version = VersionOption{Tag: m.snapshot.VMMVersion, Available: true}
+		m.setScreen(ScreenSource)
+		m.status = m.label("先验证并下载当前版本，再编辑配置", "Verify and download the installed release before editing configuration")
 	case 8:
+		m.editingInstalled = false
+		m.plan.Rollback = false
 		m.setScreen(ScreenSource)
 	case 9:
 		m.setScreen(ScreenUninstall)
+	case 10:
+		m.editingInstalled = false
+		m.plan.Rollback = true
+		m.setScreen(ScreenSource)
 	}
 	return m, nil
 }
@@ -1619,6 +1689,10 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 	}
 	if message.event.Kind == OperationEventCompleted {
 		m.finishOperation(true, operationMessage(message.event.Message, m.label("操作完成", "Operation completed")))
+		if m.operationKind == OperationProbeSource && m.editingInstalled {
+			m.setScreen(ScreenDownload)
+			return m, m.beginOperation(OperationRequest{Kind: OperationStagePackage, Plan: m.plan})
+		}
 		m.routeCompletedOperation()
 		return m, nil
 	}
@@ -1691,7 +1765,11 @@ func (m *Model) routeCompletedOperation() {
 			m.errorMessage = m.label("安装包尚未通过完整校验", "The package has not passed complete verification")
 			return
 		}
-		m.setScreen(ScreenStorage)
+		if m.editingInstalled {
+			m.setScreen(ScreenProviders)
+		} else {
+			m.setScreen(ScreenStorage)
+		}
 	case OperationValidate:
 		if m.validation.Valid {
 			m.setScreen(ScreenConfirm)
@@ -1751,7 +1829,7 @@ func (m *Model) itemCount() int {
 	case ScreenLanguage:
 		return 2
 	case ScreenHome:
-		return 10
+		return 11
 	case ScreenSource:
 		return len(m.sources) + 1
 	case ScreenVersion:

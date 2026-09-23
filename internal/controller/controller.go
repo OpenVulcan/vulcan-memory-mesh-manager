@@ -753,10 +753,13 @@ func (c *Controller) stagePackage(ctx context.Context, plan tui.InstallPlan, eve
 	}
 	operation := install.OperationInstall
 	if existing, err := state.Load(c.options.StatePath); err == nil {
-		if older, comparable := releaseTagOlderThan(releaseResult.Tag, existing.VMM.Tag); comparable && older {
+		if older, comparable := releaseTagOlderThan(releaseResult.Tag, existing.VMM.Tag); comparable && older && !plan.Rollback {
 			return errors.New("selected VMM release is older than the installed release; rollback must be explicit")
 		}
 		operation = install.OperationUpgrade
+		if plan.Rollback {
+			operation = install.OperationRollback
+		}
 	} else if !isMissingState(err) {
 		return errors.New("existing VMM installation state is invalid")
 	}
@@ -1094,22 +1097,20 @@ func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events 
 	if err != nil {
 		return err
 	}
-	candidate, err := os.MkdirTemp(c.options.CacheRoot, ".vmmm-validate-")
+	candidate, releaseCandidate, err := install.PrepareCandidateConfig(plan.ConfigRoot, c.options.CacheRoot, configFiles)
 	if err != nil {
 		return errors.New("could not create candidate configuration directory")
 	}
-	defer os.RemoveAll(candidate)
-	for relative, data := range configFiles {
-		path, err := safeRelativePath(candidate, relative)
-		if err != nil {
-			return errors.New("candidate configuration path is invalid")
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return errors.New("could not create candidate configuration directory")
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			return errors.New("could not write candidate configuration")
-		}
+	defer releaseCandidate()
+	// Validate the same credentials and override assets that commit will use, without modifying the installed tree.
+	// 校验与提交相同的凭据和规则覆盖文件，同时保持已安装配置树不变。
+	candidatePlan := plan
+	candidatePlan.ConfigRoot = candidate
+	candidatePlan.Providers.CredentialPath = filepath.Join(candidate, ".env")
+	candidatePlan.StorageSettings.PostgreSQLCredentialPath = filepath.Join(candidate, ".env")
+	candidatePlan.ServiceMode = tui.ServiceModeForeground
+	if _, err := c.applyCredentialUpdates(candidatePlan); err != nil {
+		return err
 	}
 	binaryPath := filepath.Join(packageRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
 	c.emitProgress(events, "validate-config", "Running authoritative VMM configuration validation")
@@ -1564,13 +1565,41 @@ func (c *Controller) buildConfigFiles(ctx context.Context, plan tui.InstallPlan,
 	if plan.Storage.Mode == "" {
 		return nil, errors.New("storage mode must be selected")
 	}
-	if err := editor.ApplyStorage(storage); err != nil {
+	installed, alreadyInstalled := c.loadState()
+	if alreadyInstalled {
+		if plan.Storage.Mode != storageModeFromConfig(installed.Paths.ConfigRoot) {
+			return nil, errors.New("changing storage mode requires an explicit data migration")
+		}
+		// Preserve saved paths unless the user explicitly supplied a replacement, which migration validation will check.
+		// 保留已保存路径；仅应用用户明确填写的替换值，再由迁移校验判断是否允许。
+		explicitStorage := map[string]string{}
+		switch plan.Storage.Mode {
+		case tui.StorageNative:
+			explicitStorage["sqlite.native.path"] = plan.StorageSettings.NativeSQLitePath
+			explicitStorage["lancedb.native.path"] = plan.StorageSettings.NativeLanceDBPath
+		case tui.StorageSplit, tui.StorageController:
+			explicitStorage["storage.local_data_root"] = plan.StorageSettings.LocalDataRoot
+		case tui.StoragePostgreSQL, tui.StorageParadeDB:
+			if plan.StorageSettings.PostgreSQLDSNVariable != "" {
+				explicitStorage["postgres.dsn"] = "${" + plan.StorageSettings.PostgreSQLDSNVariable + "}"
+			}
+		}
+		for path, value := range explicitStorage {
+			if value != "" {
+				if err := editor.SetScalar(path, value); err != nil {
+					return nil, errors.New("selected storage configuration is incomplete")
+				}
+			}
+		}
+	} else if err := editor.ApplyStorage(storage); err != nil {
 		return nil, errors.New("selected storage configuration is incomplete")
 	}
 	// Keep managed logs in the data root for both run modes so a later service conversion does not reopen the administrator-owned package.
 	// 两种运行方式均将受管日志放入数据根，避免日后转为服务时重新写入管理员持有的程序包。
-	if err := editor.SetScalar("logging.directory", filepath.Join(plan.DataRoot, "logs")); err != nil {
-		return nil, errors.New("managed logging directory is absent from the VMM configuration schema")
+	if !alreadyInstalled {
+		if err := editor.SetScalar("logging.directory", filepath.Join(plan.DataRoot, "logs")); err != nil {
+			return nil, errors.New("managed logging directory is absent from the VMM configuration schema")
+		}
 	}
 	for _, field := range plan.ConfigFields {
 		if field.Path == "" || !field.Editable || !field.Changed {
@@ -1589,6 +1618,9 @@ func (c *Controller) buildConfigFiles(ctx context.Context, plan tui.InstallPlan,
 	}
 	if err := validateCredentialReferences(rendered, c.credentialPath(plan)); err != nil {
 		return nil, err
+	}
+	if path := c.credentialPath(plan); path != "" && filepath.Clean(path) != filepath.Join(filepath.Clean(plan.ConfigRoot), ".env") {
+		return nil, errors.New("credentials must use .env inside the selected configuration root")
 	}
 	return map[string][]byte{defaultConfigFileName: rendered}, nil
 }
@@ -2040,6 +2072,7 @@ func (c *Controller) snapshot(ctx context.Context) (tui.InstallationSnapshot, er
 		return tui.InstallationSnapshot{}, err
 	}
 	snapshot := tui.InstallationSnapshot{Installed: true, ManagerVersion: installed.ManagerVersion, VMMVersion: installed.VMM.Tag, SourceID: installed.DownloadSource.ID, ProgramRoot: installed.Paths.ProgramRoot, ConfigRoot: installed.Paths.ConfigRoot, DataRoot: installed.Paths.DataRoot, ServiceMode: tui.ServiceModeForeground, AutoStart: installed.Service.AutoStart, PathEnabled: installed.PATH.Owner == state.PATHOwnerManager, Storage: storageModeFromConfig(installed.Paths.ConfigRoot), ServiceState: "not-registered"}
+	snapshot.SourcePrefix = installed.DownloadSource.CustomPrefix
 	if installed.Service.Name != "" {
 		snapshot.ServiceMode = tui.ServiceModeService
 		binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
@@ -2398,7 +2431,7 @@ func combinedFlavors(receipt archive.Receipt) []string {
 // planKey creates a stable non-secret identity for the staged package binding.
 // planKey 创建用于暂存包绑定的稳定不含秘密身份。
 func planKey(plan tui.InstallPlan, platformID string) string {
-	return strings.Join([]string{string(plan.Source.Source.ID), plan.Version.Tag, platformID, filepath.Clean(plan.ProgramRoot), filepath.Clean(plan.ConfigRoot), filepath.Clean(plan.DataRoot)}, "\x00")
+	return strings.Join([]string{string(plan.Source.Source.ID), plan.Version.Tag, platformID, filepath.Clean(plan.ProgramRoot), filepath.Clean(plan.ConfigRoot), filepath.Clean(plan.DataRoot), strconv.FormatBool(plan.Rollback)}, "\x00")
 }
 
 // readConfigBytes reads one existing config.yaml or returns an empty mapping.
@@ -2768,10 +2801,7 @@ func (c *Controller) compareStorageCredential(plan tui.InstallPlan, installed st
 	if len(oldNames) != 1 || len(candidateNames) != 1 || oldNames[0] != candidateNames[0] {
 		return nil
 	}
-	oldPath := c.options.CredentialPath
-	if oldPath == "" {
-		oldPath = filepath.Join(installed.Paths.ConfigRoot, ".env")
-	}
+	oldPath := filepath.Join(installed.Paths.ConfigRoot, ".env")
 	candidatePath := c.credentialPath(plan)
 	if candidatePath == "" {
 		candidatePath = filepath.Join(plan.ConfigRoot, ".env")
@@ -3030,7 +3060,7 @@ func providerConfiguration(plan tui.ProviderPlan) (providerwizard.Configuration,
 			APIKeyEnvironmentNames: append([]string(nil), route.APIKeyEnvironmentNames...),
 		}
 	}
-	if plan.RerankEnabled || len(plan.RerankRoutes) > 0 {
+	if plan.RerankConfigured || plan.RerankEnabled || len(plan.RerankRoutes) > 0 {
 		selected = true
 		configuration.Rerank = &providerwizard.RerankInput{Enabled: plan.RerankEnabled, Routes: make([]providerwizard.RerankRouteInput, 0, len(plan.RerankRoutes))}
 		for _, route := range plan.RerankRoutes {
@@ -3084,9 +3114,6 @@ func (c *Controller) credentialPath(plan tui.InstallPlan) string {
 	if value := strings.TrimSpace(plan.StorageSettings.PostgreSQLCredentialPath); value != "" {
 		return value
 	}
-	if value := strings.TrimSpace(c.options.CredentialPath); value != "" {
-		return value
-	}
 	if _, selected := providerConfiguration(plan.Providers); selected || len(plan.Providers.CredentialUpdates) > 0 || combinedStorageSelected(plan) {
 		return filepath.Join(plan.ConfigRoot, ".env")
 	}
@@ -3097,10 +3124,10 @@ func (c *Controller) credentialPath(plan tui.InstallPlan) string {
 // applyCredentialUpdates 仅在 dry-run 校验后写入供应商密钥，并返回可回滚闭包。
 func (c *Controller) applyCredentialUpdates(plan tui.InstallPlan) (func(), error) {
 	updates := append([]tui.CredentialUpdate(nil), plan.Providers.CredentialUpdates...)
-	if combinedStorageSelected(plan) {
+	if combinedStorageSelected(plan) && (plan.StorageSettings.PostgreSQLDSNVariable != "" || plan.StorageSettings.PostgreSQLDSNValue != "" || plan.StorageSettings.PostgreSQLCredentialConfigured) {
 		variable := strings.TrimSpace(plan.StorageSettings.PostgreSQLDSNVariable)
 		if variable == "" {
-			variable = "VMMM_POSTGRES_DSN"
+			variable = "VMM_POSTGRES_DSN"
 		}
 		updates = append(updates, tui.CredentialUpdate{
 			EnvironmentName: variable,

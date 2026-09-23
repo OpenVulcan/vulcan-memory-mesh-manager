@@ -107,13 +107,12 @@ func update(t *testing.T, model *Model, message tea.Msg) *Model {
 	t.Helper()
 	result, command := model.Update(message)
 	model = result.(*Model)
-	if command != nil {
+	for step := 0; command != nil; step++ {
+		if step >= 32 {
+			t.Fatal("TUI command chain did not settle")
+		}
 		result, command = model.Update(command())
 		model = result.(*Model)
-		if command != nil {
-			result, command = model.Update(command())
-			model = result.(*Model)
-		}
 	}
 	return model
 }

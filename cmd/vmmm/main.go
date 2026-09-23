@@ -76,6 +76,9 @@ type commandEnvironment struct {
 // commandOptions contains global command-line settings shared by every subcommand.
 // commandOptions 保存所有子命令共享的全局命令行设置。
 type commandOptions struct {
+	// EntryAction preserves the explicit interactive subcommand for TUI routing.
+	// EntryAction 保留明确的交互子命令，供 TUI 选择入口。
+	EntryAction string
 	// StatePath is the explicit VMMM registration path.
 	// StatePath 是明确的 VMMM 安装登记路径。
 	StatePath string
@@ -325,6 +328,12 @@ func runInteractive(environment commandEnvironment, options commandOptions, args
 		return 1
 	}
 	options.ManagerRoot = managerRoot
+	if len(args) > 0 {
+		options.EntryAction = args[0]
+		if len(args) == 2 && args[0] == "config" && args[1] == "edit" {
+			options.EntryAction = "edit"
+		}
+	}
 	runtimeValue, err := newRuntime(options)
 	if err != nil {
 		writeError(environment.stderr, err)
@@ -350,13 +359,14 @@ func launchTUI(ctx context.Context, runtimeValue *runtimeContext, options comman
 		return fmt.Errorf("unsupported language %q; use zh or en", options.Language)
 	}
 	model := tui.NewModel(tui.ModelConfig{
-		Controller: runtimeValue.controller,
-		Localizer:  tui.NewCatalogLocalizer(),
-		Language:   tui.Language(language),
-		Initial:    runtimeValue.snapshot,
-		Defaults:   runtimeValue.defaults,
-		Sources:    tui.DefaultSourceOptions(),
-		Storage:    tui.DefaultStorageOptions(),
+		EntryAction: options.EntryAction,
+		Controller:  runtimeValue.controller,
+		Localizer:   tui.NewCatalogLocalizer(),
+		Language:    tui.Language(language),
+		Initial:     runtimeValue.snapshot,
+		Defaults:    runtimeValue.defaults,
+		Sources:     tui.DefaultSourceOptions(),
+		Storage:     tui.DefaultStorageOptions(),
 	})
 	return tui.Run(model, tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output))
 }
@@ -815,6 +825,7 @@ func snapshotFromState(loaded state.State, installed bool, identity platform.Ide
 		ManagerVersion: loaded.ManagerVersion,
 		VMMVersion:     loaded.VMM.Tag,
 		SourceID:       loaded.DownloadSource.ID,
+		SourcePrefix:   loaded.DownloadSource.CustomPrefix,
 		ProgramRoot:    loaded.Paths.ProgramRoot,
 		ConfigRoot:     loaded.Paths.ConfigRoot,
 		DataRoot:       loaded.Paths.DataRoot,
