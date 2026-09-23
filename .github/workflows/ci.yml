@@ -1,0 +1,41 @@
+# Verify manager behavior on each supported operating system before release.
+# 在发行前于各受支持操作系统验证管理器行为。
+name: VMMM CI
+
+on:
+  push:
+    branches:
+      - main
+      - codex/**
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Go tests
+        run: go test ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Build native manager
+        run: go build ./cmd/vmmm
+      - name: Release and bootstrap tests
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m unittest scripts/test_package_release.py scripts/test_generate_bootstrap.py scripts/test_release_workflow.py scripts/test_sign_manifest.py -v
+          bash -n scripts/install.sh
