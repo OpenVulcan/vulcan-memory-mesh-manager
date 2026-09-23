@@ -109,6 +109,9 @@ type ValidateFunc func(context.Context, string, string) (configbridge.Validation
 // installation is handled by a separate bootstrap/manager transaction.
 // ManagerRoot 仅用于表达边界，本包不会修改它；管理器自身安装由独立引导/管理器事务处理。
 type Request struct {
+	// deferFinalization keeps file backups until the controller reconciles runtime and PATH state.
+	// deferFinalization 在控制器协调运行时与 PATH 状态之前保留文件备份。
+	deferFinalization bool
 	// ManagerRoot is the independent root of the vmmm manager executable.
 	// ManagerRoot 是 vmmm 管理器可执行文件所在的独立根目录。
 	ManagerRoot string
@@ -175,6 +178,9 @@ type Request struct {
 // Result describes the committed installation and any configuration files changed.
 // Result 描述已经提交的安装结果以及发生变化的配置文件。
 type Result struct {
+	// Finish closes a pending install after runtime reconciliation; false restores files and the previous registration.
+	// Finish 在运行时协调结束后关闭待定安装；false 恢复文件及原安装登记。
+	Finish func(bool) error `json:"-"`
 	// State is the atomically persisted registration snapshot.
 	// State 是已经原子持久化的安装登记快照。
 	State state.State
@@ -403,6 +409,13 @@ func (prepared *PreparedPackage) CommitInstall(ctx context.Context, request Requ
 	return applyPrepared(ctx, request)
 }
 
+// BeginInstall promotes a validated package while retaining rollback data; the caller must call Result.Finish before closing PreparedPackage.
+// BeginInstall 推广已校验包并保留回滚数据；调用方必须在关闭 PreparedPackage 前调用 Result.Finish。
+func (prepared *PreparedPackage) BeginInstall(ctx context.Context, request Request) (Result, error) {
+	request.deferFinalization = true
+	return prepared.CommitInstall(ctx, request)
+}
+
 // Close removes the private extracted package and invalidates the prepared handle.
 // Close 删除私有解包目录并使已准备句柄失效，但不会删除调用方拥有的压缩包。
 func (prepared *PreparedPackage) Close() {
@@ -535,7 +548,12 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 		return Result{}, fmt.Errorf("create installation transaction: %w", err)
 	}
 	transaction := newTransaction(transactionRoot)
-	defer transaction.cleanup()
+	retained := false
+	defer func() {
+		if !retained {
+			_ = transaction.cleanup()
+		}
+	}()
 
 	if err := stageProgramFiles(transaction, request.Package.Root, files); err != nil {
 		return Result{}, err
@@ -572,14 +590,41 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 	if err := saveStateWithPreparation(request.StatePath, request.Paths.DataRoot, newState); err != nil {
 		return Result{}, transaction.fail(err)
 	}
-	transaction.commit()
-
-	return Result{
+	result := Result{
 		State:          newState,
 		Operation:      request.Operation,
 		ConfigFiles:    append([]string(nil), configFiles...),
 		PreservedFiles: transaction.preservedFiles(),
-	}, nil
+	}
+	if request.deferFinalization {
+		retained = true
+		finished := false
+		result.Finish = func(commit bool) error {
+			if finished {
+				return errors.New("installation has already been finalized")
+			}
+			finished = true
+			if commit {
+				transaction.commit()
+				return transaction.cleanup()
+			}
+			if err := transaction.rollback(); err != nil {
+				// Preserve backup directories when a runtime or concurrent edit prevents safe restoration.
+				// 运行时或并发修改阻止安全恢复时保留备份目录。
+				return errors.Join(err, transaction.cleanup())
+			}
+			var stateErr error
+			if registered {
+				stateErr = state.Save(request.StatePath, oldState)
+			} else {
+				stateErr = os.Remove(request.StatePath)
+			}
+			return errors.Join(stateErr, transaction.cleanup())
+		}
+		return result, nil
+	}
+	transaction.commit()
+	return result, nil
 }
 
 // Uninstall removes only owned files whose recorded summaries still match.

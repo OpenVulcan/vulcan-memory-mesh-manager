@@ -3,7 +3,9 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,5 +104,35 @@ func TestRestagingReleasesPreviousLock(t *testing.T) {
 		if err := controller.stagePackage(ctx, plan, make(chan tui.OperationEvent, 32)); err != nil {
 			t.Fatalf("restaging reused its own held lock: %v", err)
 		}
+	}
+}
+
+// TestStartupFailureRestoresPreviousConfiguration checks the full controller boundary after candidate process startup fails.
+// TestStartupFailureRestoresPreviousConfiguration 在候选进程启动失败后检查完整控制器恢复边界。
+func TestStartupFailureRestoresPreviousConfiguration(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatal("fixture installation failed")
+		}
+	}
+	before, err := os.ReadFile(filepath.Join(plan.ConfigRoot, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := &fakeProcess{running: true, startErrors: []error{errors.New("candidate startup failed"), nil}}
+	controller.process = process
+	plan.ConfigFields = []tui.ConfigField{{Path: "logging.directory", Type: "string", Value: filepath.Join(plan.DataRoot, "changed-logs"), Editable: true, Changed: true}}
+	if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationStagePackage, Plan: plan})) != tui.OperationEventCompleted {
+		t.Fatal("upgrade stage failed")
+	}
+	if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationInstall, Plan: plan})) != tui.OperationEventFailed {
+		t.Fatal("failed startup was reported as success")
+	}
+	if after, err := os.ReadFile(filepath.Join(plan.ConfigRoot, "config.yaml")); err != nil || !bytes.Equal(before, after) {
+		t.Fatal("failed startup retained the candidate configuration")
+	}
+	if !process.running || len(process.startErrors) != 0 {
+		t.Fatal("previous runtime was not restored")
 	}
 }

@@ -1021,17 +1021,25 @@ func (f *fakeService) called(wanted string) bool {
 // fakeProcess supplies a stopped foreground status for installation snapshots.
 // fakeProcess 为安装快照提供已停止的前台状态。
 type fakeProcess struct {
-	running   bool
-	calls     []string
-	startErr  error
-	stopErr   error
-	statusErr error
+	running     bool
+	calls       []string
+	startErr    error
+	startErrors []error
+	stopErr     error
+	statusErr   error
 }
 
 // Start implements foreground start for tests.
 // Start 为测试实现前台启动。
 func (f *fakeProcess) Start(context.Context, string, string) error {
 	f.calls = append(f.calls, "start")
+	if len(f.startErrors) > 0 {
+		err := f.startErrors[0]
+		f.startErrors = f.startErrors[1:]
+		if err != nil {
+			return err
+		}
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}

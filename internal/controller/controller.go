@@ -866,9 +866,6 @@ func (c *Controller) pauseInstalledRuntime(ctx context.Context, installed state.
 			}
 			runtime.serviceUninstalled = true
 		}
-		if !runtime.serviceWasRunning && !runtime.serviceUninstalled {
-			return nil, nil
-		}
 		return runtime, nil
 	}
 	if c.process == nil {
@@ -1046,36 +1043,51 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 	}
 	request := install.Request{ManagerRoot: c.options.ManagerRoot, Operation: prepared.operation, ManagerVersion: c.options.ManagerVersion, Manifest: prepared.release.Manifest, Artifact: prepared.artifact, Package: prepared.packageData, Expected: prepared.expected, Paths: paths, StatePath: c.options.StatePath, Source: sourceState(plan.Source.Source), Service: serviceState, PATH: pathState, ConfigFiles: configFiles, ValidateConfig: c.validateFunc()}
 	c.emitProgress(events, "validate-config", "Validating candidate configuration with VMM")
-	result, err := prepared.prepared.CommitInstall(ctx, request)
+	result, err := prepared.prepared.BeginInstall(ctx, request)
 	if err != nil {
 		return errors.New("candidate VMM configuration or installation transaction failed")
 	}
-	commitCompleted = true
-	c.emitProgress(events, "install", "VMM installation committed")
-	if err := c.applyServiceAfterInstall(ctx, plan, result.State, oldState, oldExists, stopped); err != nil {
-		// A pre-commit service stop or uninstall has already created a runtime boundary. If
-		// post-commit reconciliation fails before it can restore the registration, restart the
-		// old service while its durable state still names that service.
-		// 提交后的服务协调若在恢复注册前失败，而此前已停止服务，则在持久化状态仍指向旧服务时
-		// 重启旧服务，避免留下“已注册但停止”的半完成状态。
-		if plan.ServiceMode == tui.ServiceModeForeground && c.runtimeCanRestoreService(stopped, result.State) && stopped.serviceWasRunning {
-			if restoreErr := c.restoreStoppedRuntime(stopped, events); restoreErr != nil {
-				return restoreErr
+	pathChanged := false
+	previousPATH, currentPATH := emptyPATHState(), emptyPATHState()
+	defer func() {
+		if !commitCompleted {
+			recovery, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			stopErr := c.stopCandidateRuntime(recovery, result.State, stopped)
+			cancel()
+			if stopErr != nil {
+				// Retain files when a runtime cannot be stopped, preventing execution against a partial rollback.
+				// 无法停止运行时时保留文件，避免其使用部分回滚的程序。
+				commitCompleted = true
+				returnErr = errors.Join(returnErr, errors.New("VMM rollback could not stop the runtime; current installation was retained"), stopErr)
+			} else if pathChanged {
+				c.rollbackPathChange(result.State.Paths, previousPATH, currentPATH)
 			}
 		}
+		if finishErr := result.Finish(commitCompleted); finishErr != nil {
+			returnErr = errors.Join(returnErr, finishErr)
+			if !commitCompleted {
+				// Failed file recovery must not restart a process against an uncertain executable tree.
+				// 文件恢复失败后，不能在身份不确定的程序树上重启进程。
+				commitCompleted = true
+			}
+		}
+	}()
+	c.emitProgress(events, "install", "VMM files prepared; reconciling runtime and PATH")
+	if err := c.applyServiceAfterInstall(ctx, plan, result.State, oldState, oldExists, stopped); err != nil {
 		return err
 	}
 	updatedState, err := state.Load(c.options.StatePath)
 	if err != nil {
 		return errors.New("installed VMM state could not be reloaded")
 	}
-	previousPATH := updatedState.PATH
+	previousPATH = updatedState.PATH
 	updatedState.PATH, err = c.applyPath(plan, updatedState.Paths, updatedState.PATH)
 	if err != nil {
 		return err
 	}
+	currentPATH = updatedState.PATH
+	pathChanged = true
 	if err := state.Save(c.options.StatePath, updatedState); err != nil {
-		c.rollbackPathChange(updatedState.Paths, previousPATH, updatedState.PATH)
 		return errors.New("installed VMM state could not be updated")
 	}
 	if stopped != nil && stopped.wasRunning() {
@@ -1083,12 +1095,57 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 			return err
 		}
 	}
-	stopped = nil
 	snapshot, err := c.snapshot(ctx)
 	if err != nil {
 		return err
 	}
+	commitCompleted = true
+	stopped = nil
 	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Snapshot: &snapshot, Progress: tui.Progress{Stage: "install", Message: "VMM installation is ready"}})
+	return nil
+}
+
+// stopCandidateRuntime stops newly reconciled processes before rolling files back and marks an old service for restoration.
+// stopCandidateRuntime 在回滚文件前停止新协调的进程，并标记需要恢复的旧服务注册。
+func (c *Controller) stopCandidateRuntime(ctx context.Context, candidate state.State, stopped *stoppedRuntime) error {
+	current, err := c.requireState()
+	if err != nil {
+		return err
+	}
+	binaryPath := filepath.Join(candidate.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
+	if current.Service.Name != "" {
+		client, err := c.options.ServiceFactory(binaryPath)
+		if err != nil {
+			return err
+		}
+		status, err := client.GetStatus(ctx, current.Service.Name)
+		if err != nil {
+			return err
+		}
+		if status.State == "running" {
+			if err := client.Stop(ctx, current.Service.Name); err != nil {
+				return err
+			}
+		}
+		if err := client.Uninstall(ctx, current.Service.Name); err != nil {
+			return err
+		}
+		if stopped != nil && stopped.serviceName != "" {
+			stopped.serviceUninstalled = true
+		}
+	}
+	if c.process != nil {
+		if binder, ok := c.process.(processConfigBinder); ok {
+			binder.Bind(binaryPath, candidate.Paths.ConfigRoot)
+		}
+		status, err := c.process.Status(ctx, binaryPath)
+		if err != nil {
+			return err
+		}
+		if status.Running {
+			return c.process.Stop(ctx, binaryPath)
+		}
+	}
 	return nil
 }
 
