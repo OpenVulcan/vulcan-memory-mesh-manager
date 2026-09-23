@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/testpath"
 )
 
 // TestMain turns the test binary into a long-lived fake VMM child when requested.
@@ -22,7 +24,7 @@ func TestMain(main *testing.M) {
 // TestLifecycleUsesVerifiedIdentity exercises start, status, duplicate start, and stop.
 // TestLifecycleUsesVerifiedIdentity 验证启动、状态、重复启动和停止都使用身份校验。
 func TestLifecycleUsesVerifiedIdentity(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	configRoot := filepath.Join(root, "config")
 	if err := os.Mkdir(configRoot, 0700); err != nil {
 		t.Fatal(err)
@@ -77,7 +79,7 @@ func TestLifecycleUsesVerifiedIdentity(t *testing.T) {
 // TestStaleRecordIsCleanedWithoutKillingAnUnrelatedProcess proves PID mismatch is fail-closed.
 // TestStaleRecordIsCleanedWithoutKillingAnUnrelatedProcess 验证 PID 不匹配时安全清理且不误杀。
 func TestStaleRecordIsCleanedWithoutKillingAnUnrelatedProcess(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	configRoot := filepath.Join(root, "config")
 	if err := os.Mkdir(configRoot, 0700); err != nil {
 		t.Fatal(err)
@@ -120,9 +122,5 @@ func TestStaleRecordIsCleanedWithoutKillingAnUnrelatedProcess(t *testing.T) {
 // mustExecutablePath 返回当前测试二进制作为普通 fake 可执行文件。
 func mustExecutablePath(t *testing.T) string {
 	t.Helper()
-	path, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return testpath.CanonicalExecutable(t)
 }

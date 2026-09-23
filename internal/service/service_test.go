@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/testpath"
 )
 
 const (
@@ -91,7 +93,7 @@ func TestNewRequiresAbsoluteRegularBinary(t *testing.T) {
 	if _, err := New("vmm-local.exe"); err == nil {
 		t.Fatal("expected relative executable path to be rejected")
 	}
-	if _, err := New(t.TempDir()); err == nil {
+	if _, err := New(testpath.CanonicalTempDir(t)); err == nil {
 		t.Fatal("expected directory path to be rejected")
 	}
 	executable, err := os.Executable()
@@ -111,7 +113,7 @@ func TestNewRequiresAbsoluteRegularBinary(t *testing.T) {
 // TestInstallPassesFixedArgumentVector 验证带空格的服务名和路径仍作为独立子进程参数传递。
 func TestInstallPassesFixedArgumentVector(t *testing.T) {
 	client, logPath := newFakeClient(t)
-	configDirectory := filepath.Join(t.TempDir(), "config with spaces")
+	configDirectory := filepath.Join(testpath.CanonicalTempDir(t), "config with spaces")
 	if err := os.Mkdir(configDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +197,8 @@ func TestServiceUserArgumentPolicy(t *testing.T) {
 // TestSudoCommandArgumentsUsesAClosedVector verifies privilege escalation never invokes a shell or reorders VMM arguments.
 // TestSudoCommandArgumentsUsesAClosedVector 验证提权参数不调用 shell，也不会重排 VMM 参数。
 func TestSudoCommandArgumentsUsesAClosedVector(t *testing.T) {
-	binaryPath := filepath.Join(t.TempDir(), "vmm-local")
-	args := []string{"service", "install", "vmm", "-config", filepath.Join(t.TempDir(), "config root"), "-user", "vmm-service"}
+	binaryPath := filepath.Join(testpath.CanonicalTempDir(t), "vmm-local")
+	args := []string{"service", "install", "vmm", "-config", filepath.Join(testpath.CanonicalTempDir(t), "config root"), "-user", "vmm-service"}
 	wrapped := sudoCommandArguments(binaryPath, args)
 	want := append([]string{"-n", binaryPath}, args...)
 	if len(wrapped) != len(want) {
@@ -233,7 +235,7 @@ func TestWindowsPrivilegeBoundaryKeepsVMMVectorUnchanged(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-only invocation boundary")
 	}
-	binaryPath := filepath.Join(t.TempDir(), "vmm-local.exe")
+	binaryPath := filepath.Join(testpath.CanonicalTempDir(t), "vmm-local.exe")
 	args := []string{"service", "start", "vmm"}
 	path, actual, usedSudo, err := preparePrivilegedCommand(binaryPath, args, true)
 	if err != nil {
@@ -247,19 +249,19 @@ func TestWindowsPrivilegeBoundaryKeepsVMMVectorUnchanged(t *testing.T) {
 // TestConfigPathValidationRequiresAbsoluteDirectoryOrYAML verifies install cannot persist a relative or arbitrary file path.
 // TestConfigPathValidationRequiresAbsoluteDirectoryOrYAML 验证安装不能持久化相对路径或任意文件路径。
 func TestConfigPathValidationRequiresAbsoluteDirectoryOrYAML(t *testing.T) {
-	validDirectory := t.TempDir()
-	missingDirectory := filepath.Join(t.TempDir(), "future-config-root")
-	validYAML := filepath.Join(t.TempDir(), "settings.yml")
+	validDirectory := testpath.CanonicalTempDir(t)
+	missingDirectory := filepath.Join(testpath.CanonicalTempDir(t), "future-config-root")
+	validYAML := filepath.Join(testpath.CanonicalTempDir(t), "settings.yml")
 	if err := os.WriteFile(validYAML, []byte("# test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	missingYAML := filepath.Join(t.TempDir(), "not-created.yaml")
+	missingYAML := filepath.Join(testpath.CanonicalTempDir(t), "not-created.yaml")
 	for _, path := range []string{validDirectory, missingDirectory, validYAML, missingYAML} {
 		if _, err := validateConfigPath(path); err != nil {
 			t.Errorf("validateConfigPath(%q): %v", path, err)
 		}
 	}
-	invalidPaths := []string{"config.yaml", filepath.Join(t.TempDir(), "config.json"), filepath.Join(t.TempDir(), "bad\nname.yaml"), filepath.Join(t.TempDir(), "missing.json")}
+	invalidPaths := []string{"config.yaml", filepath.Join(testpath.CanonicalTempDir(t), "config.json"), filepath.Join(testpath.CanonicalTempDir(t), "bad\nname.yaml"), filepath.Join(testpath.CanonicalTempDir(t), "missing.json")}
 	for _, path := range invalidPaths {
 		if _, err := validateConfigPath(path); err == nil {
 			t.Errorf("validateConfigPath(%q) succeeded", path)
@@ -359,7 +361,7 @@ func TestProcessErrorsDoNotRevealConfigurationOrEnvironment(t *testing.T) {
 	t.Setenv(helperExitEnvironment, "17")
 	secret := "test-secret-do-not-log"
 	t.Setenv(helperSecretEnvironment, secret)
-	configPath := filepath.Join(t.TempDir(), "private-config.yaml")
+	configPath := filepath.Join(testpath.CanonicalTempDir(t), "private-config.yaml")
 	err := client.Install(context.Background(), "vmm", configPath, "vmm-service", false)
 	if err == nil {
 		t.Fatal("expected fake executable to fail")
@@ -427,7 +429,7 @@ func newFakeClient(t *testing.T) (*Client, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(t.TempDir(), "arguments.json")
+	logPath := filepath.Join(testpath.CanonicalTempDir(t), "arguments.json")
 	t.Setenv(helperModeEnvironment, "1")
 	t.Setenv(helperLogEnvironment, logPath)
 	t.Setenv(helperStatusEnvironment, "")
@@ -438,6 +440,7 @@ func newFakeClient(t *testing.T) (*Client, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	client.testUnprivileged = true
 	return client, logPath
 }
 
@@ -515,7 +518,7 @@ func TestFakeHelperCanBeStartedDirectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(t.TempDir(), "arguments.json")
+	logPath := filepath.Join(testpath.CanonicalTempDir(t), "arguments.json")
 	command := exec.Command(path, "service", "status", "vmm")
 	command.Env = append(os.Environ(), helperModeEnvironment+"=1", helperLogEnvironment+"="+logPath)
 	if err := command.Run(); err != nil {

@@ -33,6 +33,7 @@ import (
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/release"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/service"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/state"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/testpath"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/tui"
 )
 
@@ -131,7 +132,7 @@ func TestNewRejectsEmptyTrustRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := t.TempDir()
+	base := testpath.CanonicalTempDir(t)
 	_, err = New(Options{
 		ManagerVersion: "vmmm-test",
 		ManagerRoot:    filepath.Join(base, "manager"),
@@ -762,7 +763,7 @@ func TestServiceUserOwnershipGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	if err := validateServiceUserForInstall(account.Username, []string{filepath.Join(root, "config"), filepath.Join(root, "data")}); err != nil {
 		t.Fatalf("current account ownership check failed: %v", err)
 	}
@@ -791,7 +792,7 @@ func TestServiceUserPermissionGate(t *testing.T) {
 	if err != nil || account.Username == "" {
 		t.Fatalf("user.Current() error = %v", err)
 	}
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	if err := os.Chmod(root, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1059,7 +1060,7 @@ func (f *fakePath) Remove(pathctl.Record) error {
 func newFixtureController(t *testing.T) (*Controller, tui.InstallPlan, fixturePackage) {
 	t.Helper()
 	fixture := newFixturePackage(t)
-	base := t.TempDir()
+	base := testpath.CanonicalTempDir(t)
 	plan := tui.InstallPlan{
 		Source:      tui.SourceOption{Source: download.DefaultSources()[0], Available: true},
 		Version:     tui.VersionOption{Tag: fixture.tag, Commit: fixture.commit, Available: true},
@@ -1195,7 +1196,7 @@ func newFixturePackage(t *testing.T) fixturePackage {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := t.TempDir()
+	base := testpath.CanonicalTempDir(t)
 	tag := "v1.2.3"
 	commit := strings.Repeat("a", 40)
 	packageName := "vulcan-memory-mesh-" + tag + "-" + identity.PlatformID

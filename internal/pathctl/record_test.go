@@ -12,12 +12,13 @@ import (
 	"testing"
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/state"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/testpath"
 )
 
 // TestRecordRoundTrip verifies complete platform metadata survives persistence.
 // TestRecordRoundTrip 验证完整平台元数据可以持久化并恢复。
 func TestRecordRoundTrip(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	filePath := filepath.Join(root, "path-record.json")
 	want := validPathRecord(root)
 	if err := SaveRecord(filePath, want); err != nil {
@@ -35,7 +36,7 @@ func TestRecordRoundTrip(t *testing.T) {
 // TestRecordPersistenceRejectsMalformedJSON protects strict JSON boundaries.
 // TestRecordPersistenceRejectsMalformedJSON 保护严格 JSON 边界。
 func TestRecordPersistenceRejectsMalformedJSON(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	valid, err := json.Marshal(validPathRecord(root))
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
@@ -61,7 +62,7 @@ func TestRecordPersistenceRejectsMalformedJSON(t *testing.T) {
 // TestRecordPersistenceRejectsOversize verifies the bounded reader before JSON decoding.
 // TestRecordPersistenceRejectsOversize 验证 JSON 解码前的大小限制。
 func TestRecordPersistenceRejectsOversize(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	filePath := filepath.Join(root, "oversize.json")
 	if err := os.WriteFile(filePath, []byte(strings.Repeat("x", int(maxRecordBytes)+1)), 0o600); err != nil {
 		t.Fatalf("write oversize fixture: %v", err)
@@ -74,7 +75,7 @@ func TestRecordPersistenceRejectsOversize(t *testing.T) {
 // TestRecordPersistenceRejectsLinks prevents a record path from following links at rest.
 // TestRecordPersistenceRejectsLinks 防止持久化记录路径跟随符号链接。
 func TestRecordPersistenceRejectsLinks(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	realFile := filepath.Join(root, "real.json")
 	if err := SaveRecord(realFile, validPathRecord(root)); err != nil {
 		t.Fatalf("SaveRecord() failed: %v", err)
@@ -94,7 +95,7 @@ func TestRecordPersistenceRejectsLinks(t *testing.T) {
 // TestRecordPersistenceRejectsSymlinkParent prevents records from escaping a selected root.
 // TestRecordPersistenceRejectsSymlinkParent 防止记录通过符号链接逃出选定根目录。
 func TestRecordPersistenceRejectsSymlinkParent(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	realDirectory := filepath.Join(root, "real")
 	if err := os.Mkdir(realDirectory, 0o700); err != nil {
 		t.Fatalf("create real directory: %v", err)
@@ -112,7 +113,7 @@ func TestRecordPersistenceRejectsSymlinkParent(t *testing.T) {
 // TestRecordPersistenceRejectsRelativePath verifies callers must select an absolute record location.
 // TestRecordPersistenceRejectsRelativePath 验证调用方必须选择绝对记录路径。
 func TestRecordPersistenceRejectsRelativePath(t *testing.T) {
-	if err := SaveRecord("path-record.json", validPathRecord(t.TempDir())); err == nil {
+	if err := SaveRecord("path-record.json", validPathRecord(testpath.CanonicalTempDir(t))); err == nil {
 		t.Fatal("SaveRecord() accepted a relative record path")
 	}
 }
@@ -123,7 +124,7 @@ func TestRecordPersistenceRejectsBroadPOSIXPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows uses ACLs rather than POSIX mode bits")
 	}
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	filePath := filepath.Join(root, "path-record.json")
 	if err := SaveRecord(filePath, validPathRecord(root)); err != nil {
 		t.Fatalf("SaveRecord() failed: %v", err)

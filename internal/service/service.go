@@ -78,6 +78,10 @@ type Client struct {
 	// runner replaces the OS process launch only in package tests; production uses exec.CommandContext.
 	// runner 仅在包测试中替换操作系统进程启动；生产环境使用 exec.CommandContext。
 	runner commandRunner
+
+	// testUnprivileged executes the fake service binary directly in package tests only.
+	// testUnprivileged 仅在包测试中直接执行伪服务程序。
+	testUnprivileged bool
 }
 
 // Status contains the stable key-value fields emitted by VMM's cross-platform service CLI.
@@ -292,14 +296,22 @@ func (c *Client) runWithPrivilege(ctx context.Context, action string, args []str
 	if c.timeout <= 0 {
 		return "", errors.New("VMM service timeout must be positive")
 	}
-	if c.runner == nil {
+	if c.runner == nil && !c.testUnprivileged {
 		if err := validateServiceBinaryTrust(c.binaryPath); err != nil {
 			return "", commandFailure(action, err, privileged)
 		}
 	}
 	commandContext, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	commandPath, commandArgs, usedSudo, prepareErr := preparePrivilegedCommand(c.binaryPath, args, privileged)
+	var commandPath string
+	var commandArgs []string
+	var usedSudo bool
+	var prepareErr error
+	if c.testUnprivileged {
+		commandPath, commandArgs = c.binaryPath, args
+	} else {
+		commandPath, commandArgs, usedSudo, prepareErr = preparePrivilegedCommand(c.binaryPath, args, privileged)
+	}
 	if prepareErr != nil {
 		return "", commandFailure(action, prepareErr, privileged || usedSudo)
 	}

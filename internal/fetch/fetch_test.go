@@ -24,6 +24,7 @@ import (
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/download"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/manifest"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/testpath"
 )
 
 // testArtifactFilename is the fixed test-only release asset basename.
@@ -42,7 +43,7 @@ func TestFetchStreamsAndPublishesVerifiedArtifact(t *testing.T) {
 	}))
 	defer server.Close()
 
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	var lastProgress int64
 	request.Progress = func(downloaded int64, total int64) {
 		if total != int64(len(artifactBytes)) || downloaded < lastProgress || downloaded > total {
@@ -86,7 +87,7 @@ func TestFetchUsesInjectedURLResolver(t *testing.T) {
 		_, _ = response.Write(artifactBytes)
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	resolver := URLResolver(func(_ download.Source, repository download.Repository, tag string, filename string) (string, error) {
 		if repository != download.RepositoryVMM || tag != "v1.2.3" || filename != testArtifactFilename {
 			t.Errorf("resolver identity = (%q, %q, %q)", repository, tag, filename)
@@ -120,7 +121,7 @@ func TestFetchRejectsProxyErrorPage(t *testing.T) {
 		_, _ = response.Write(secretBody)
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	_, err := fetchWithClient(context.Background(), server.Client(), request)
 	if err == nil {
 		t.Fatalf("Fetch() accepted a proxy error page: %v", err)
@@ -139,7 +140,7 @@ func TestFetchRejectsWrongLength(t *testing.T) {
 		_, _ = response.Write(artifactBytes[:len(artifactBytes)-1])
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	_, err := fetchWithClient(context.Background(), server.Client(), request)
 	if !errors.Is(err, ErrArtifactSize) {
 		t.Fatalf("Fetch() error = %v, want ErrArtifactSize", err)
@@ -157,7 +158,7 @@ func TestFetchBoundsOversizedResponse(t *testing.T) {
 		_, _ = response.Write(append(append([]byte(nil), artifactBytes...), []byte("overflow")...))
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	_, err := fetchWithClient(context.Background(), server.Client(), request)
 	if !errors.Is(err, ErrArtifactSize) {
 		t.Fatalf("Fetch() error = %v, want ErrArtifactSize", err)
@@ -174,7 +175,7 @@ func TestFetchRejectsWrongDigest(t *testing.T) {
 		_, _ = response.Write(wrongBytes)
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	_, err := fetchWithClient(context.Background(), server.Client(), request)
 	if !errors.Is(err, ErrArtifactDigest) {
 		t.Fatalf("Fetch() error = %v, want ErrArtifactDigest", err)
@@ -193,7 +194,7 @@ func TestFetchRejectsTruncatedResponse(t *testing.T) {
 		response.(http.Flusher).Flush()
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	_, err := fetchWithClient(context.Background(), server.Client(), request)
 	if err == nil {
 		t.Fatal("Fetch() succeeded with a truncated response")
@@ -214,7 +215,7 @@ func TestFetchRejectsHTTPSDowngrade(t *testing.T) {
 	}))
 	defer secureServer.Close()
 	artifactBytes := []byte("verified artifact body")
-	request := testRequest(t, secureServer, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, secureServer, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	_, err := fetchWithClient(context.Background(), secureServer.Client(), request)
 	if err == nil {
 		t.Fatal("Fetch() succeeded after an HTTPS-to-HTTP redirect")
@@ -238,7 +239,7 @@ func TestFetchRejectsDuplicateTarget(t *testing.T) {
 		_, _ = response.Write(artifactBytes)
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	priorBytes := []byte("previous verified artifact")
 	if err := os.WriteFile(request.StagingPath, priorBytes, 0o600); err != nil {
 		t.Fatalf("create preexisting artifact: %v", err)
@@ -270,7 +271,7 @@ func TestFetchCancellationCleansTemporaryFile(t *testing.T) {
 		<-request.Context().Done()
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	ctx, cancel := context.WithCancel(context.Background())
 	resultChannel := make(chan error, 1)
 	go func() {
@@ -305,7 +306,7 @@ func TestFetchBindsProductToRepository(t *testing.T) {
 		_, _ = response.Write(artifactBytes)
 	}))
 	defer server.Close()
-	request := testRequest(t, server, artifactBytes, filepath.Join(t.TempDir(), testArtifactFilename))
+	request := testRequest(t, server, artifactBytes, filepath.Join(testpath.CanonicalTempDir(t), testArtifactFilename))
 	request.Product = manifest.ProductVMMM
 	request.Repository = download.RepositoryManager
 	_, err := fetchWithClient(context.Background(), server.Client(), request)
@@ -325,7 +326,7 @@ func TestFetchRejectsPathTraversal(t *testing.T) {
 		_, _ = response.Write(artifactBytes)
 	}))
 	defer server.Close()
-	stagingDirectory := t.TempDir()
+	stagingDirectory := testpath.CanonicalTempDir(t)
 	traversingPath := stagingDirectory + string(os.PathSeparator) + ".." + string(os.PathSeparator) + testArtifactFilename
 	request := testRequest(t, server, artifactBytes, traversingPath)
 	_, err := fetchWithClient(context.Background(), server.Client(), request)
@@ -343,8 +344,8 @@ func TestFetchRejectsSymlinkedStagingPath(t *testing.T) {
 		_, _ = response.Write(artifactBytes)
 	}))
 	defer server.Close()
-	baseDirectory := t.TempDir()
-	outsideDirectory := t.TempDir()
+	baseDirectory := testpath.CanonicalTempDir(t)
+	outsideDirectory := testpath.CanonicalTempDir(t)
 	linkPath := filepath.Join(baseDirectory, "staging-link")
 	if err := os.Symlink(outsideDirectory, linkPath); err != nil {
 		t.Skipf("symbolic links are unavailable in this environment: %v", err)

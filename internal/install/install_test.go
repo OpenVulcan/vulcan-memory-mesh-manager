@@ -28,6 +28,7 @@ import (
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/manifest"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/platform"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/state"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/testpath"
 )
 
 // TestInstallPromotesVerifiedPackageAndValidatesConfig checks the complete first-install transaction.
@@ -204,7 +205,7 @@ func TestUninstallRejectsSymlinkedManagedParent(t *testing.T) {
 		t.Fatalf("Install() error = %v", err)
 	}
 
-	outsideRoot := filepath.Join(t.TempDir(), "outside")
+	outsideRoot := filepath.Join(testpath.CanonicalTempDir(t), "outside")
 	if err := os.MkdirAll(outsideRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +269,7 @@ func TestCallerPackageMutationCannotChangeInstalledArtifact(t *testing.T) {
 func TestPreparedCommitUsesPrivatePackage(t *testing.T) {
 	request, _, _ := newInstallRequest(t, "")
 	request.ValidateConfig = validConfigValidator(t)
-	forgedRoot := filepath.Join(t.TempDir(), filepath.Base(request.Package.Root))
+	forgedRoot := filepath.Join(testpath.CanonicalTempDir(t), filepath.Base(request.Package.Root))
 	if err := os.MkdirAll(forgedRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +313,7 @@ func TestRejectUpgradeDowngrade(t *testing.T) {
 // TestInstallLockSerializesTransactions checks that a second transaction waits and honors cancellation.
 // TestInstallLockSerializesTransactions 验证第二个事务会等待，并且遵守取消信号。
 func TestInstallLockSerializesTransactions(t *testing.T) {
-	lockPath := filepath.Join(t.TempDir(), InstallLockFileName)
+	lockPath := filepath.Join(testpath.CanonicalTempDir(t), InstallLockFileName)
 	first, err := acquireInstallLock(context.Background(), lockPath)
 	if err != nil {
 		t.Fatal(err)
@@ -370,8 +371,8 @@ func TestPreparedPackageHoldsInstallLockUntilClose(t *testing.T) {
 // TestTransactionCopySupportsSeparateSourceAndTargetRoots verifies same-volume target staging for a separate root.
 // TestTransactionCopySupportsSeparateSourceAndTargetRoots 验证源目录与目标目录分离时仍在目标卷暂存。
 func TestTransactionCopySupportsSeparateSourceAndTargetRoots(t *testing.T) {
-	sourceRoot := t.TempDir()
-	targetRoot := t.TempDir()
+	sourceRoot := testpath.CanonicalTempDir(t)
+	targetRoot := testpath.CanonicalTempDir(t)
 	source := filepath.Join(sourceRoot, "candidate.yaml")
 	target := filepath.Join(targetRoot, "config.yaml")
 	if err := os.WriteFile(source, []byte("new-config"), 0o600); err != nil {
@@ -453,7 +454,7 @@ func alternateVolumeTempDir(t *testing.T, currentPath string) string {
 // TestTransactionRollbackIsIdempotent ensures deferred cleanup cannot remove restored files.
 // TestTransactionRollbackIsIdempotent 验证重复回滚不会删除已经恢复的文件。
 func TestTransactionRollbackIsIdempotent(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	target := filepath.Join(root, "target.txt")
 	source := filepath.Join(root, "source.txt")
 	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
@@ -485,7 +486,7 @@ func TestTransactionRollbackIsIdempotent(t *testing.T) {
 // TestTransactionRollbackPreservesExternalModification keeps a changed target and its backup on rollback failure.
 // TestTransactionRollbackPreservesExternalModification 验证目标被外部修改后回滚会保留目标和备份。
 func TestTransactionRollbackPreservesExternalModification(t *testing.T) {
-	root := t.TempDir()
+	root := testpath.CanonicalTempDir(t)
 	target := filepath.Join(root, "target.txt")
 	source := filepath.Join(root, "source.txt")
 	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
@@ -529,13 +530,18 @@ func newInstallRequest(t *testing.T, packageRootOverride string) (Request, state
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := t.TempDir()
+	base := testpath.CanonicalTempDir(t)
 	paths := state.InstallPaths{
 		ProgramRoot: filepath.Join(base, "vmm"),
 		ConfigRoot:  filepath.Join(base, "config"),
 		DataRoot:    filepath.Join(base, "data"),
 	}
 	statePath := filepath.Join(paths.DataRoot, RegistrationFileName)
+	if runtime.GOOS != "windows" {
+		// Unix control state belongs to a separate root so the service account cannot rewrite manager registration.
+		// Unix 控制状态使用独立根目录，避免服务账户改写管理器注册记录。
+		statePath = filepath.Join(base, "control", RegistrationFileName)
+	}
 	tag := "v1.2.3"
 	commit := strings.Repeat("a", 40)
 	packageRoot := packageRootOverride
