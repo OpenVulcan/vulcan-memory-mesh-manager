@@ -850,7 +850,7 @@ func (c *Controller) pauseInstalledRuntime(ctx context.Context, installed state.
 	binaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
 	if installed.Service.Name != "" {
 		if install.FilesIntact(installed) != "" {
-			return nil, ErrDamagedServiceControl
+			return nil, c.confirmDamagedServiceAbsent(ctx, installed.Service.Name)
 		}
 		client, err := c.options.ServiceFactory(binaryPath)
 		if err != nil {
@@ -921,6 +921,31 @@ func (c *Controller) pauseInstalledRuntime(ctx context.Context, installed state.
 		return nil, errors.New("existing VMM foreground process could not be stopped")
 	}
 	return &stoppedRuntime{process: c.process, binaryPath: binaryPath, configRoot: installed.Paths.ConfigRoot, foreground: true}, nil
+}
+
+// confirmDamagedServiceAbsent uses a newly verified staged CLI only to prove no native service exists.
+// confirmDamagedServiceAbsent 只用重新验证的暂存 CLI 证明系统服务不存在，绝不从暂存路径停止或修改已有服务。
+// Existing registrations still require their exact executable identity and are rejected by this inspection.
+// 已有服务登记仍要求精确的程序路径身份，本检查遇到已有登记时返回明确修复错误。
+func (c *Controller) confirmDamagedServiceAbsent(ctx context.Context, name string) error {
+	staged := c.stagedSnapshot()
+	if staged == nil {
+		return ErrDamagedServiceControl
+	}
+	verified, cleanup, err := c.reverifyStagedPackage(ctx, staged)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	client, err := c.options.ServiceFactory(filepath.Join(verified.Root, filepath.FromSlash(c.identity.VMMExecutablePath)))
+	if err != nil {
+		return ErrDamagedServiceControl
+	}
+	status, err := client.GetStatus(ctx, name)
+	if err != nil || status.State != "not-installed" {
+		return ErrDamagedServiceControl
+	}
+	return nil
 }
 
 // restore restarts the exact runtime that pauseInstalledRuntime stopped.

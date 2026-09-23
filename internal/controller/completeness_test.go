@@ -156,6 +156,7 @@ func TestMissingServiceCanBeReinstalled(t *testing.T) {
 				t.Fatal(err)
 			}
 			saved.Service.Name = "VulcanMemoryMesh"
+			saved.Service.User = serviceUserForState(currentServiceUser(t))
 			saved.InstallationComplete = false
 			if err := state.Save(controller.options.StatePath, saved); err != nil {
 				t.Fatal(err)
@@ -181,5 +182,53 @@ func TestMissingServiceCanBeReinstalled(t *testing.T) {
 				t.Fatal("attempted to stop a service proven absent")
 			}
 		})
+	}
+}
+
+// TestInterruptedServiceCopyCanBeReinstalled verifies missing executable bytes do not block repair when no native service exists.
+// TestInterruptedServiceCopyCanBeReinstalled 验证程序复制中断且系统服务不存在时，可通过已验证暂存程序检查后重装。
+func TestInterruptedServiceCopyCanBeReinstalled(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatal("fixture install failed")
+		}
+	}
+	saved, err := state.Load(controller.options.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved.Service.Name, saved.InstallationComplete = "VulcanMemoryMesh", false
+	saved.Service.User = serviceUserForState(currentServiceUser(t))
+	if err := state.Save(controller.options.StatePath, saved); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(plan.ProgramRoot, filepath.FromSlash(controller.identity.VMMExecutablePath))
+	if err := os.Remove(binaryPath); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fakeService{status: service.Status{State: "not-installed", AutoStart: "false"}}
+	inspectedVerifiedStage := false
+	controller.options.ServiceFactory = func(binary string) (ServiceClient, error) {
+		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+			if binary == binaryPath {
+				t.Fatal("attempted to inspect service with the missing executable")
+			}
+			if _, err := os.Stat(binary); err != nil {
+				t.Fatal("verified staged CLI missing")
+			}
+			inspectedVerifiedStage = true
+		}
+		return adapter, nil
+	}
+	plan.Repair, plan.ServiceMode, plan.ServiceUser = true, tui.ServiceModeService, currentServiceUser(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("interrupted copy repair failed at %s", kind)
+		}
+	}
+	snapshot, err := controller.Snapshot(context.Background())
+	if err != nil || !snapshot.Installed || !inspectedVerifiedStage || adapter.called("stop") {
+		t.Fatalf("interrupted copy was not safely repaired: %+v %v %v", snapshot, adapter.calls, err)
 	}
 }
