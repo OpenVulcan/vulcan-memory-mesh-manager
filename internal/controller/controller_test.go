@@ -316,14 +316,14 @@ func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(plan.ConfigRoot, defaultConfigFileName), files[defaultConfigFileName], 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(plan.ProgramRoot, 0o700); err != nil {
+	if err := os.MkdirAll(plan.ProgramRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	binaryPath := filepath.Join(plan.ProgramRoot, filepath.FromSlash(fixture.identity.VMMExecutablePath))
-	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(binaryPath, []byte("binary"), 0o700); err != nil {
+	if err := os.WriteFile(binaryPath, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	installed := state.State{
