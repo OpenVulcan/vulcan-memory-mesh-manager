@@ -118,7 +118,7 @@ func TestStageAndValidateDefaultLocalStorageModes(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			request, _, _ := newInstallRequest(t, "")
 			request.ConfigFiles = map[string][]byte{
-				UserConfigFileName: []byte(fmt.Sprintf("storage:\n  mode: %s\n  local_data_root: %q\n", mode, request.Paths.DataRoot)),
+				UserConfigFileName: []byte(fmt.Sprintf("storage:\n  mode: %s\n  local_data_root: %q\nllm:\n  routes:\n    - provider: openai\n      endpoint: https://api.openai.com/v1\n      model: test-model\n      api_keys: [local-validation-only]\nembedding:\n  provider: openai\n  endpoint: https://api.openai.com/v1\n  model: test-embedding\n  api_keys: [local-validation-only]\nrerank:\n  enabled: false\n", mode, request.Paths.DataRoot)),
 			}
 			request.ValidateConfig = func(ctx context.Context, _ string, configRoot string) (configbridge.ValidationResult, error) {
 				client, err := configbridge.New(binaryPath, configRoot)
@@ -155,6 +155,13 @@ func isolateInstallTestVMMLayout(t *testing.T, sourceBinary string) string {
 	configs := filepath.Join(filepath.Dir(filepath.Dir(sourceBinary)), "configs")
 	if err := os.CopyFS(filepath.Join(root, "configs"), os.DirFS(configs)); err != nil {
 		t.Fatalf("copy validator system configuration: %v", err)
+	}
+	// Development overlays may require private credentials; the isolated test supplies its own complete provider fixture.
+	// 开发覆盖可能要求私有凭据；隔离测试使用自己的完整供应商夹具，不依赖开发者环境。
+	for _, name := range []string{"config.yaml", ".env"} {
+		if err := os.Remove(filepath.Join(root, "configs", name)); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
 	}
 	return binaryPath
 }
