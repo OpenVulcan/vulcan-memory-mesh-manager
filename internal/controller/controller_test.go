@@ -126,10 +126,47 @@ func TestServiceAutoStartRejectsConflictingNativeStatus(t *testing.T) {
 		{AutoStart: "true", StartType: "manual"},
 		{AutoStart: "false", StartType: "automatic"},
 		{AutoStart: "false", StartType: "custom"},
+		{AutoStart: "disabled", StartType: "disabled"},
 	} {
 		if _, err := serviceAutoStart(status); err == nil {
 			t.Errorf("accepted unsupported service policy: %+v", status)
 		}
+	}
+}
+
+// TestDisabledWindowsServicePolicyBlocksRegistrationChanges proves native disabled policy is rejected before an irreversible service mutation.
+// TestDisabledWindowsServicePolicyBlocksRegistrationChanges 验证原生禁用策略在不可精确回退的服务变更前被拒绝。
+func TestDisabledWindowsServicePolicyBlocksRegistrationChanges(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	plan.ServiceMode = tui.ServiceModeService
+	plan.ServiceUser = currentServiceUser(t)
+	adapter := &fakeService{}
+	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return adapter, nil }
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("service fixture install failed at %s", kind)
+		}
+	}
+	adapter.status = service.Status{State: "stopped", AutoStart: "disabled", StartType: "disabled"}
+	for _, action := range []tui.ServiceAction{tui.ServiceActionEnable, tui.ServiceActionDisable, tui.ServiceActionUninstall} {
+		adapter.calls = nil
+		request := tui.OperationRequest{Kind: tui.OperationService, TargetMode: tui.ServiceModeService, ServiceAction: action}
+		events := collectOperation(t, controller, request)
+		if terminalKind(events) != tui.OperationEventFailed {
+			t.Errorf("disabled native policy did not block %s", action)
+		}
+		if got := events[len(events)-1].Message; got != safeOperationError(ErrNativeServiceDisabled) {
+			t.Errorf("disabled service guidance for %s = %q", action, got)
+		}
+		for _, call := range adapter.calls {
+			if call != "status" {
+				t.Errorf("%s mutated native service before rejection: %v", action, adapter.calls)
+			}
+		}
+	}
+	registered, err := state.Load(controller.options.StatePath)
+	if err != nil || registered.Service.Name == "" {
+		t.Fatalf("disabled native policy changed registration: %+v %v", registered.Service, err)
 	}
 }
 
@@ -859,7 +896,9 @@ func TestPathRollbackRemovesNewIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyPath() error = %v", err)
 	}
-	controller.rollbackPathChange(state.InstallPaths{DataRoot: plan.DataRoot}, previous, current)
+	if err := controller.rollbackPathChange(previous, current); err != nil {
+		t.Fatalf("rollbackPathChange() error = %v", err)
+	}
 	if pathAdapter.removes != 1 {
 		t.Fatalf("PATH compensation remove calls = %d, want 1", pathAdapter.removes)
 	}
@@ -896,6 +935,59 @@ func TestPathActionRollsBackWhenStateSaveFails(t *testing.T) {
 	}
 	if _, err := os.Stat(pathRecordPath(controller.controlStateRoot())); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("PATH ownership receipt survived compensation: %v", err)
+	}
+}
+
+// TestPathActionReportsFailedRollback verifies failed native reversal is reported and its retry receipt remains available.
+// TestPathActionReportsFailedRollback 验证原生撤销失败会明确上报，且可重试的所有权收据仍保留。
+func TestPathActionReportsFailedRollback(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("fixture install failed at %s", kind)
+		}
+	}
+	originalState, err := os.ReadFile(controller.options.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var injectedErr error
+	pathAdapter := &fakePath{removeErr: errors.New("native PATH removal failed"), onInstall: func() {
+		if injectedErr = os.Remove(controller.options.StatePath); injectedErr == nil {
+			injectedErr = os.Mkdir(controller.options.StatePath, 0o700)
+		}
+	}}
+	controller.options.PathFactory = func() PathClient { return pathAdapter }
+	err = controller.pathAction(context.Background(), tui.OperationRequest{Kind: tui.OperationPath, AddToPath: true}, make(chan tui.OperationEvent, 8))
+	if injectedErr != nil {
+		t.Fatal(injectedErr)
+	}
+	if !errors.Is(err, ErrPathRollbackFailed) || safeOperationError(err) != "Manager PATH change could not be rolled back; inspect PATH and retry removal if an ownership record exists" {
+		t.Fatalf("failed PATH reversal was not reported: %v", err)
+	}
+	if pathAdapter.removes != 1 {
+		t.Fatalf("native PATH reversal calls = %d, want 1", pathAdapter.removes)
+	}
+	if _, err := os.Stat(pathRecordPath(controller.controlStateRoot())); err != nil {
+		t.Fatalf("retry receipt was removed after native rollback failure: %v", err)
+	}
+	// Restore the damaged test registration, then verify an ordinary PATH-disable retry consumes the saved receipt.
+	// 恢复测试中损坏的安装登记，再验证普通关闭 PATH 操作能使用保留收据完成重试。
+	if err := os.Remove(controller.options.StatePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(controller.options.StatePath, originalState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pathAdapter.removeErr = nil
+	if err := controller.pathAction(context.Background(), tui.OperationRequest{Kind: tui.OperationPath, AddToPath: false}, make(chan tui.OperationEvent, 8)); err != nil {
+		t.Fatalf("retry PATH removal: %v", err)
+	}
+	if pathAdapter.removes != 2 {
+		t.Fatalf("PATH removal retry calls = %d, want 2", pathAdapter.removes)
+	}
+	if _, err := os.Stat(pathRecordPath(controller.controlStateRoot())); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry receipt after successful removal = %v, want missing", err)
 	}
 }
 
@@ -1365,6 +1457,9 @@ type fakePath struct {
 	installs  int
 	removes   int
 	onInstall func()
+	// removeErr simulates a native PATH reversal failure while preserving the ownership receipt.
+	// removeErr 模拟原生 PATH 撤销失败，同时保留所有权收据。
+	removeErr error
 }
 
 // Install returns a platform-valid manager-owned record.
@@ -1399,7 +1494,7 @@ func (f *fakePath) Install(options pathctl.Options) (pathctl.Record, error) {
 // Remove 记录安全的管理器拥有 PATH 移除。
 func (f *fakePath) Remove(pathctl.Record) error {
 	f.removes++
-	return nil
+	return f.removeErr
 }
 
 // newFixtureController builds one controller with a real signed archive and injected deterministic adapters.

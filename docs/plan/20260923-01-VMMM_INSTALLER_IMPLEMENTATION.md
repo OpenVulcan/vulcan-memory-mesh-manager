@@ -403,3 +403,10 @@ VMM 提交 `efd6027` 对应的原生持续集成已在五个平台全部通过�
 2. 文件变更：修改 `internal/controller/controller.go`、`internal/controller/installed_config_test.go`、`internal/controller/validator_integration_test.go`、`internal/tui/view.go`、`README.md` 与本计划；无新增或删除文件。
 3. 关键逻辑：Embedding 更新供应商、端点、模型、维度和已验证的密钥变量引用；省略的端点明确清空，以免沿用旧供应商 URL。由于 VMM 显式节点密钥优先于顶层密钥，向导清空旧 `embedding.nodes`，同时保留吞吐和批大小等独立设置。重排只更新启用开关，并且仅在选择新路由时替换路由列表；`top_n` 保留。LLM 路由替换仍由向导明确告知。回归测试先用原实现复现旧端点和高级字段丢失，再验证新配置正确更新密钥引用、清空旧节点并保留其余设置。真实 VMM 集成测试改用真实二进制导出的 schema，测试提前失败时也释放暂存锁。
 4. 验证与边界：新增回归测试在修复前失败、修复后通过；修正后的真实 VMM 集成测试及使用标准布局真实二进制执行的本机全量四百一十二项管理器 Go 测试通过，`go vet ./...` 与差异检查通过。五平台持续集成待提交后复验。Certum 正式发行门禁继续保留。
+
+### 服务原生启动策略与 PATH 回退复审
+
+1. 核心修复与调整概述：Windows SCM 的原生“禁用”启动类型不能通过 VMM 的“关闭自启动”命令精确恢复，现于注销、自启变更前拒绝并给出改为“手动”的指引。PATH 登记保存失败时，原生撤销错误不再被吞掉；若保留所有权收据，后续关闭 PATH 会按收据重试。连续无问题审核计数重新归零。
+2. 📂文件变更清单：修改 `internal/controller/controller.go`、`internal/controller/controller_test.go`、`internal/tui/operation_text.go`、`README.md` 与本计划；无新增或删除文件。
+3. 💻关键代码调整详情：`serviceAutoStart` 区分 Windows 的“手动”和“禁用”，拒绝无法精确补偿的原生策略；服务操作在原生变更前完成检查。`rollbackPathChange` 改为返回错误，安装与单独 PATH 操作都向终止结果传播撤销失败；`applyPath` 先处理安装状态为无 PATH 时遗留的所有权收据。用户可见错误提供中英文固定文案。回归测试模拟登记写入和原生撤销同时失败，先证明普通关闭 PATH 无法重试，再验证修复后凭收据完成撤销。
+4. ⚠️遗留问题与注意事项：使用真实 VMM 标准布局二进制执行的本机全量四百一十四项管理器 Go 测试、`go vet ./...` 及差异检查通过。五平台持续集成待本次提交后复验。Certum 证书尚在办理，正式发行门禁继续保留；Windows 原生“禁用”服务须由管理员先改为“手动”。

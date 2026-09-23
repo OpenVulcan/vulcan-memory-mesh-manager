@@ -84,6 +84,12 @@ var (
 	// ErrPathRecordUnavailable means manager-owned PATH metadata cannot be safely recovered.
 	// ErrPathRecordUnavailable 表示无法安全恢复管理器拥有的 PATH 元数据。
 	ErrPathRecordUnavailable = errors.New("manager PATH record is unavailable")
+	// ErrPathRollbackFailed means a failed metadata write left a native PATH change requiring manual retry.
+	// ErrPathRollbackFailed 表示登记写入失败后原生 PATH 变更未能撤销，需要人工重试。
+	ErrPathRollbackFailed = errors.New("manager PATH rollback failed")
+	// ErrNativeServiceDisabled means Windows SCM has a disabled startup policy that VMM cannot restore exactly.
+	// ErrNativeServiceDisabled 表示 Windows SCM 使用了 VMM 无法精确恢复的禁用启动策略。
+	ErrNativeServiceDisabled = errors.New("VMM service is disabled in Windows SCM")
 )
 
 // ServiceClient is the narrow service adapter used by the controller.
@@ -1192,7 +1198,9 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 				commitCompleted = true
 				returnErr = errors.Join(returnErr, errors.New("VMM rollback could not stop the runtime; current installation was retained"), stopErr)
 			} else if pathChanged {
-				c.rollbackPathChange(result.State.Paths, previousPATH, currentPATH)
+				if rollbackErr := c.rollbackPathChange(previousPATH, currentPATH); rollbackErr != nil {
+					returnErr = errors.Join(returnErr, ErrPathRollbackFailed, rollbackErr)
+				}
 			}
 		}
 		if finishErr := result.Finish(commitCompleted, completedSnapshot != nil); finishErr != nil {
@@ -1612,10 +1620,14 @@ func serviceAutoStart(status service.Status) (bool, error) {
 			if !enabled {
 				return false, errors.New("VMM service start policy is inconsistent")
 			}
-		case "manual", "disabled":
+		case "manual":
 			if enabled {
 				return false, errors.New("VMM service start policy is inconsistent")
 			}
+		case "disabled":
+			// VMM's disable command restores manual startup, so a native disabled policy has no exact compensation path.
+			// VMM 的 disable 命令会恢复手动启动，因此原生禁用策略没有精确补偿路径。
+			return false, ErrNativeServiceDisabled
 		default:
 			return false, errors.New("VMM service start policy is unsupported")
 		}
@@ -1649,8 +1661,10 @@ func (c *Controller) pathAction(ctx context.Context, request tui.OperationReques
 	if err := state.Save(c.options.StatePath, installed); err != nil {
 		// A failed registration write must not leave a newly installed PATH entry outside durable ownership.
 		// 登记写入失败时不能留下脱离持久所有权的新 PATH 入口。
-		c.rollbackPathChange(installed.Paths, previousPATH, pathState)
-		return errors.New("PATH state could not be saved")
+		if rollbackErr := c.rollbackPathChange(previousPATH, pathState); rollbackErr != nil {
+			return errors.Join(errors.New("PATH state could not be saved"), ErrPathRollbackFailed, rollbackErr)
+		}
+		return errors.New("PATH state could not be saved; PATH change was rolled back")
 	}
 	snapshot, err := c.snapshot(ctx)
 	if err != nil {
@@ -2395,6 +2409,19 @@ func (c *Controller) applyServiceAfterInstall(ctx context.Context, plan tui.Inst
 // applyPath changes PATH only after the permanent manager target is known and persists exact metadata.
 // applyPath 仅在永久管理器目标确定后修改 PATH，并持久化精确元数据。
 func (c *Controller) applyPath(plan tui.InstallPlan, paths state.InstallPaths, previous state.PATHState) (state.PATHState, error) {
+	if previous.Owner == state.PATHOwnerNone {
+		// A failed metadata write can leave an owned PATH receipt while state still says none; reconcile it before either choice.
+		// 登记写入失败可能留下所有权收据，而安装状态仍为无 PATH；两种选择都先核对并清理。
+		_, found, err := loadPathRecord(c.controlStateRoot())
+		if err != nil {
+			return state.PATHState{}, ErrPathRecordUnavailable
+		}
+		if found {
+			if err := c.removePathRecord(c.controlStateRoot()); err != nil {
+				return state.PATHState{}, err
+			}
+		}
+	}
 	if !plan.AddToPath {
 		if previous.Owner == state.PATHOwnerManager {
 			if err := c.removePathRecord(c.controlStateRoot()); err != nil {
@@ -2425,7 +2452,9 @@ func (c *Controller) applyPath(plan tui.InstallPlan, paths state.InstallPaths, p
 		return state.PATHState{}, errors.New("manager PATH integration failed")
 	}
 	if err := savePathRecord(c.controlStateRoot(), record); err != nil {
-		_ = pathClient.Remove(record)
+		if rollbackErr := pathClient.Remove(record); rollbackErr != nil {
+			return state.PATHState{}, errors.Join(ErrPathRecordUnavailable, ErrPathRollbackFailed, rollbackErr)
+		}
 		return state.PATHState{}, ErrPathRecordUnavailable
 	}
 	return record.Path, nil
@@ -2457,32 +2486,37 @@ func (c *Controller) removePathRecord(controlRoot string) error {
 	return nil
 }
 
-// rollbackPathChange restores the observed PATH integration when durable state persistence fails.
-// rollbackPathChange 在持久化状态失败时恢复已观察到的 PATH 集成。
-func (c *Controller) rollbackPathChange(paths state.InstallPaths, previous state.PATHState, current state.PATHState) {
+// rollbackPathChange restores the observed PATH integration when durable state persistence fails and reports incomplete compensation.
+// rollbackPathChange 在持久化状态失败时恢复已观察到的 PATH 集成，并报告未完成的补偿。
+func (c *Controller) rollbackPathChange(previous state.PATHState, current state.PATHState) error {
 	if pathStatesEqual(previous, current) {
-		return
+		return nil
 	}
 	if current.Owner == state.PATHOwnerManager && previous.Owner != state.PATHOwnerManager {
-		_ = c.removePathRecord(c.controlStateRoot())
-		return
+		return c.removePathRecord(c.controlStateRoot())
 	}
 	if previous.Owner != state.PATHOwnerManager || current.Owner == state.PATHOwnerManager {
-		return
+		return nil
 	}
 	pathClient := c.options.PathFactory()
 	if pathClient == nil {
-		return
+		return errors.New("PATH control is unavailable during rollback")
 	}
 	options, err := c.defaultPathOptions()
 	if err != nil {
-		return
+		return err
 	}
 	record, err := pathClient.Install(options)
 	if err != nil {
-		return
+		return err
 	}
-	_ = savePathRecord(c.controlStateRoot(), record)
+	if record.Path.Owner != state.PATHOwnerManager || !pathStatesEqual(record.Path, previous) {
+		return errors.New("PATH rollback did not restore the previous manager-owned integration")
+	}
+	if err := savePathRecord(c.controlStateRoot(), record); err != nil {
+		return errors.Join(err, pathClient.Remove(record))
+	}
+	return nil
 }
 
 // pathStatesEqual compares the durable PATH portion without relying on slice identity.
@@ -2651,6 +2685,12 @@ func (c *Controller) emitRequired(events chan tui.OperationEvent, event tui.Oper
 func safeOperationError(err error) string {
 	if errors.Is(err, ErrDamagedServiceControl) {
 		return "Service program files are damaged; stop the service with the operating system and restore the verified package at the original program root before retrying"
+	}
+	if errors.Is(err, ErrNativeServiceDisabled) {
+		return "Windows service is disabled in Services; change its startup type to Manual before changing registration with vmmm"
+	}
+	if errors.Is(err, ErrPathRollbackFailed) {
+		return "Manager PATH change could not be rolled back; inspect PATH and retry removal if an ownership record exists"
 	}
 	if err == nil {
 		return "Operation failed"
