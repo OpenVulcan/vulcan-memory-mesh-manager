@@ -509,6 +509,14 @@ func (c *Controller) OpenConfigFields(ctx context.Context, request tui.ConfigFie
 	if cleanup != nil {
 		defer cleanup()
 	}
+	if request.Prefix == "@rules" {
+		fields, err := readRuleAssets(filepath.Join(filepath.Dir(filepath.Dir(binaryPath)), "configs"), configRoot)
+		if err != nil {
+			return tui.ConfigFieldsResult{}, errors.New("VMM rule assets could not be read")
+		}
+		fields = overlayConfigFields(fields, request.Fields)
+		return tui.ConfigFieldsResult{Fields: fields, Changed: configFieldsChanged(fields, request.Fields), Summary: "Rule assets loaded"}, nil
+	}
 	schema, err := c.options.Schema(ctx, binaryPath, configRoot)
 	if err != nil {
 		return tui.ConfigFieldsResult{}, errors.New("VMM configuration schema could not be loaded")
@@ -1601,8 +1609,16 @@ func (c *Controller) buildConfigFiles(ctx context.Context, plan tui.InstallPlan,
 			return nil, errors.New("managed logging directory is absent from the VMM configuration schema")
 		}
 	}
+	ruleFiles := make(map[string][]byte)
 	for _, field := range plan.ConfigFields {
 		if field.Path == "" || !field.Editable || !field.Changed {
+			continue
+		}
+		if field.RuleAsset {
+			if !validRuleAssetPath(field.Path) || len(field.Value) > maxRuleFileBytes {
+				return nil, errors.New("rule asset path or size is invalid")
+			}
+			ruleFiles[field.Path] = []byte(field.Value)
 			continue
 		}
 		if err := setEditorField(editor, schema, field); err != nil {
@@ -1622,7 +1638,8 @@ func (c *Controller) buildConfigFiles(ctx context.Context, plan tui.InstallPlan,
 	if path := c.credentialPath(plan); path != "" && filepath.Clean(path) != filepath.Join(filepath.Clean(plan.ConfigRoot), ".env") {
 		return nil, errors.New("credentials must use .env inside the selected configuration root")
 	}
-	return map[string][]byte{defaultConfigFileName: rendered}, nil
+	ruleFiles[defaultConfigFileName] = rendered
+	return ruleFiles, nil
 }
 
 // setEditorField applies one scalar schema field without guessing unsupported types.

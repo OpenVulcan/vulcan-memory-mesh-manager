@@ -455,7 +455,7 @@ func (m *Model) renderFieldEdit() []string {
 	lines := []string{
 		m.label("高级配置字段", "Advanced configuration fields"),
 		m.label("只写入可编辑字段；未知字段和只读字段不会被猜测修改。", "Only editable fields are written; unknown and read-only fields are never guessed."),
-		m.label("结构化字段可用 Ctrl+O 换行，Enter 保存当前字段。", "Use Ctrl+O for a newline in structured fields; Enter saves the current field."),
+		m.label("Ctrl+O 换行，Ctrl+U 清空，Enter 暂存当前字段或规则文件。", "Ctrl+O inserts a newline, Ctrl+U clears, Enter stages the field or rule file."),
 		m.label("敏感字段只接受 ${环境变量名} 引用，列表不会显示原值。", "Sensitive fields accept only ${ENV_NAME} references; existing values stay hidden."),
 	}
 	for index, field := range m.configFields.Fields {
@@ -552,6 +552,7 @@ func (m *Model) renderConfigCheck() []string {
 		m.option(0, m.label("打开全部高级配置", "Open all advanced fields")),
 		m.option(1, m.label("调用 VMM 校验", "Validate with VMM")),
 		m.option(2, m.label("继续到执行确认", "Continue to execution confirmation")),
+		m.option(3, m.label("编辑提示词、PII 与噪声规则文件", "Edit prompt, PII, and noise rule files")),
 	)
 	return lines
 }

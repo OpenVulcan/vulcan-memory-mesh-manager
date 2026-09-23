@@ -536,6 +536,9 @@ type ValidationSummary struct {
 // ConfigField describes one optional advanced configuration field.
 // ConfigField 描述一个可选的高级配置字段。
 type ConfigField struct {
+	// RuleAsset marks a complete prompt or rule file beneath the VMM override root.
+	// RuleAsset 表示 VMM 覆盖根下的完整提示词或规则文件。
+	RuleAsset bool
 	// Path is the authoritative schema path.
 	// Path 是权威 schema 路径。
 	Path string

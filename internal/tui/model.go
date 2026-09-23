@@ -558,6 +558,10 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 // updateTextInput 编辑 Unicode 文本，并在 Enter 时提交当前字段。
 func (m *Model) updateTextInput(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := message.Key()
+	if keyMatches(message, "ctrl+u") {
+		m.input = ""
+		return m, nil
+	}
 	if m.screen == ScreenFieldEdit && m.editingField >= 0 && keyMatches(message, "ctrl+o", "alt+enter") {
 		m.input += "\n"
 		return m, nil
@@ -579,6 +583,9 @@ func (m *Model) updateTextInput(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // activateTextInput 提交自定义源或一个安装路径字段。
 func (m *Model) activateTextInput() (tea.Model, tea.Cmd) {
 	value := strings.TrimSpace(m.input)
+	if m.screen == ScreenFieldEdit && m.editingField >= 0 && m.editingField < len(m.configFields.Fields) && m.configFields.Fields[m.editingField].RuleAsset {
+		value = m.input
+	}
 	if value == "" && m.screen != ScreenFieldEdit && m.screen != ScreenProviderWizard && m.screen != ScreenStorageCredential {
 		m.errorMessage = m.label("输入不能为空", "Input must not be empty")
 		return m, nil
@@ -777,6 +784,8 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 			return m, m.beginConfigFields("")
 		case 1:
 			return m, m.beginOperation(OperationRequest{Kind: OperationValidate, Plan: m.plan})
+		case 3:
+			return m, m.beginConfigFields("@rules")
 		default:
 			if !m.validation.Valid {
 				m.status = m.label("必须先通过 VMM 配置检查，才能继续确认", "The VMM configuration must pass validation before confirmation")
@@ -1856,7 +1865,7 @@ func (m *Model) itemCount() int {
 	case ScreenPath:
 		return 2
 	case ScreenConfigCheck:
-		return 3
+		return 4
 	case ScreenConfirm:
 		return 2
 	case ScreenRunning:
