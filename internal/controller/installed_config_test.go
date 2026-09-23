@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configedit"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/install"
@@ -87,5 +88,19 @@ func TestExplicitRerankDisable(t *testing.T) {
 	configuration, selected := providerConfiguration(tui.ProviderPlan{RerankConfigured: true})
 	if !selected || configuration.Rerank == nil || configuration.Rerank.Enabled {
 		t.Fatal("explicit rerank disable was discarded")
+	}
+}
+
+// TestRestagingReleasesPreviousLock covers going back to change source or paths after a successful package download.
+// TestRestagingReleasesPreviousLock 覆盖下载成功后返回修改来源或路径时重新暂存的流程。
+func TestRestagingReleasesPreviousLock(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	defer controller.discardStaged()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for range 2 {
+		if err := controller.stagePackage(ctx, plan, make(chan tui.OperationEvent, 32)); err != nil {
+			t.Fatalf("restaging reused its own held lock: %v", err)
+		}
 	}
 }

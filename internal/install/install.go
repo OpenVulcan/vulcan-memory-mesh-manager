@@ -308,6 +308,19 @@ func acquireRequestInstallLock(ctx context.Context, statePath string) (*installL
 	return lock, nil
 }
 
+// LockInstallation serializes direct lifecycle changes with staged install transactions; callers must release the returned lock.
+// LockInstallation 将直接生命周期变更与暂存安装事务串行化；调用方必须释放返回的锁。
+func LockInstallation(ctx context.Context, statePath string) (func() error, error) {
+	if err := validateStatePath(statePath); err != nil {
+		return nil, err
+	}
+	lock, err := acquireRequestInstallLock(ctx, statePath)
+	if err != nil {
+		return nil, err
+	}
+	return lock.Close, nil
+}
+
 // validateInstallLockPath rejects a lock path redirected by a symlink or reparse point.
 // validateInstallLockPath 拒绝被符号链接或重解析点重定向的事务锁路径。
 func validateInstallLockPath(path string) error {

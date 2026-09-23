@@ -329,46 +329,16 @@ func TestValidateServiceLoggingConfiguredRequiresExplicitRoot(t *testing.T) {
 // TestServiceAndPathLifecycleUsesDurableState exercises service status parsing and reversible PATH state.
 // TestServiceAndPathLifecycleUsesDurableState 验证服务状态读取和可逆 PATH 状态均来自持久化安装信息。
 func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
-	controller, plan, fixture := newFixtureController(t)
-	if err := os.MkdirAll(plan.DataRoot, 0o700); err != nil {
-		t.Fatal(err)
+	controller, plan, _ := newFixtureController(t)
+	// Create the registration through the actual installer so Windows ACLs and Unix control ownership match production.
+	// 通过真实安装事务创建登记，使 Windows ACL 和 Unix 控制目录归属与生产一致。
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatal("fixture installation failed")
+		}
 	}
-	// Model an existing foreground install with its managed log root before converting it to a service.
-	// 用带受管日志根的既有前台安装来验证转换为服务的流程。
-	files, err := controller.buildConfigFiles(context.Background(), plan, plan.ProgramRoot)
+	installed, err := state.Load(controller.options.StatePath)
 	if err != nil {
-		t.Fatalf("build existing configuration: %v", err)
-	}
-	if err := os.MkdirAll(plan.ConfigRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(plan.ConfigRoot, defaultConfigFileName), files[defaultConfigFileName], 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(plan.ProgramRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	binaryPath := filepath.Join(plan.ProgramRoot, filepath.FromSlash(fixture.identity.VMMExecutablePath))
-	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(binaryPath, []byte("binary"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	installed := state.State{
-		ProtocolVersion: state.ProtocolVersion,
-		ManagerVersion:  "vmmm-test",
-		VMM:             state.VMMIdentity{Tag: fixture.tag, Commit: fixture.commit, Platform: fixture.identity.PlatformID},
-		Paths:           state.InstallPaths{ProgramRoot: plan.ProgramRoot, ConfigRoot: plan.ConfigRoot, DataRoot: plan.DataRoot},
-		DownloadSource:  state.DownloadSource{ID: string(download.SourceIDGitHubOfficial)},
-		Service:         state.ServiceState{},
-		PATH:            state.PATHState{Owner: state.PATHOwnerNone, Scope: state.PATHScopeNone, Entries: []string{}},
-		ManagedFiles:    []state.ManagedFile{},
-	}
-	if err := os.MkdirAll(filepath.Dir(controller.options.StatePath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := state.Save(controller.options.StatePath, installed); err != nil {
 		t.Fatal(err)
 	}
 	serviceAdapter := &fakeService{status: service.Status{State: "running", AutoStart: "true"}}
@@ -376,10 +346,15 @@ func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
 	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return serviceAdapter, nil }
 	controller.options.PathFactory = func() PathClient { return pathAdapter }
 	controller.options.ManagerRoot = plan.ProgramRoot
+	releaseLock, err := install.LockInstallation(context.Background(), controller.options.StatePath)
+	if err != nil {
+		t.Fatalf("lock existing fixture: %v", err)
+	}
+	_ = releaseLock()
 
 	serviceEvents := collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationService, TargetMode: tui.ServiceModeService, ServiceAction: tui.ServiceActionInstall, Plan: tui.InstallPlan{AutoStart: true, ServiceUser: currentServiceUser(t)}})
 	if terminalKind(serviceEvents) != tui.OperationEventCompleted || !serviceAdapter.called("install") {
-		t.Fatalf("service install failed: terminal=%v calls=%v", terminalKind(serviceEvents), serviceAdapter.calls)
+		t.Fatalf("service install failed: terminal=%v calls=%v events=%+v", terminalKind(serviceEvents), serviceAdapter.calls, serviceEvents)
 	}
 	registered, err := state.Load(controller.options.StatePath)
 	if err != nil {

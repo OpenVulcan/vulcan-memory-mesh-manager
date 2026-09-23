@@ -14,7 +14,9 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/install"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/service"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/state"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/tui"
 )
 
@@ -47,14 +49,16 @@ func TestServiceInstallForUnprivilegedAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	controller, plan, fixture := newFixtureControllerAt(t, base)
-	plan.ServiceMode = tui.ServiceModeService
-	plan.ServiceUser = account.Username
 	adapter := &fakeService{status: service.Status{State: "stopped", User: account.Username}}
 	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return adapter, nil }
 	events := make(chan tui.OperationEvent, 32)
 	if err := controller.stagePackage(context.Background(), plan, events); err != nil {
 		t.Fatalf("stage service package: %v", err)
 	}
+	// The real wizard asks for the account only after staging and directory preparation.
+	// 真实向导在包暂存及目录准备之后才询问运行账户。
+	plan.ServiceMode = tui.ServiceModeService
+	plan.ServiceUser = account.Username
 	if err := controller.install(context.Background(), plan, events); err != nil {
 		t.Fatalf("install for unprivileged account: %v", err)
 	}
@@ -70,5 +74,65 @@ func TestServiceInstallForUnprivilegedAccount(t *testing.T) {
 	check.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
 	if output, err := check.CombinedOutput(); err != nil {
 		t.Fatalf("selected account access check failed: %v, output: %s", err, output)
+	}
+}
+
+// TestServiceOwnershipRollback verifies the actual UID boundary, rollback, and refusal to follow a user-controlled link.
+// TestServiceOwnershipRollback 验证真实 UID 边界、归属回退及拒绝跟随用户控制的链接。
+func TestServiceOwnershipRollback(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires a root Linux test process")
+	}
+	account, err := user.Lookup("nobody")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, err := strconv.ParseUint(account.Uid, 10, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := os.MkdirTemp("/var/lib", ".vmmm-transfer-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	paths := state.InstallPaths{ProgramRoot: filepath.Join(base, "program"), ConfigRoot: filepath.Join(base, "config"), DataRoot: filepath.Join(base, "data")}
+	for _, root := range []string{paths.ConfigRoot, paths.DataRoot} {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file := filepath.Join(paths.DataRoot, "database.db")
+	if err := os.WriteFile(file, []byte("preserved"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finish, err := install.TransferServiceRoots(paths, account.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.ConfigRoot, paths.DataRoot, file} {
+		info, err := os.Stat(path)
+		if err != nil || info.Sys().(*syscall.Stat_t).Uid != uint32(uid) {
+			t.Fatalf("ownership transfer failed: %s", path)
+		}
+	}
+	if err := finish(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.ConfigRoot, paths.DataRoot, file} {
+		info, err := os.Stat(path)
+		if err != nil || info.Sys().(*syscall.Stat_t).Uid != 0 {
+			t.Fatalf("ownership rollback failed: %s", path)
+		}
+	}
+	if err := os.Symlink(file, filepath.Join(paths.ConfigRoot, "linked-file")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.TransferServiceRoots(paths, account.Username); err == nil {
+		t.Fatal("ownership transfer accepted a symbolic link")
+	}
+	info, err := os.Stat(file)
+	if err != nil || info.Sys().(*syscall.Stat_t).Uid != 0 {
+		t.Fatal("rejected link changed its destination owner")
 	}
 }

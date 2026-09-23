@@ -624,10 +624,13 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 	case tui.OperationValidate:
 		err = c.validate(ctx, request.Plan, events)
 	case tui.OperationService:
+		c.discardStaged()
 		err = c.serviceAction(ctx, request, events)
 	case tui.OperationPath:
+		c.discardStaged()
 		err = c.pathAction(ctx, request, events)
 	case tui.OperationUninstall:
+		c.discardStaged()
 		err = c.uninstall(ctx, request.Uninstall, events)
 	case tui.OperationRefresh:
 		err = c.refresh(ctx, events)
@@ -696,6 +699,9 @@ func (c *Controller) stagePackage(ctx context.Context, plan tui.InstallPlan, eve
 	if strings.TrimSpace(plan.Version.Tag) == "" {
 		return errors.New("VMM release version must be selected")
 	}
+	// A replacement staging request must release this controller's previous lock before acquiring it again.
+	// 替换暂存请求必须先释放当前控制器先前持有的锁，才能再次获取。
+	c.discardStaged()
 	identity := c.identity
 	if err := os.MkdirAll(c.options.CacheRoot, 0o700); err != nil {
 		return errors.New("could not prepare package cache")
@@ -966,7 +972,7 @@ func (c *Controller) startInstalledRuntime(ctx context.Context, plan tui.Install
 
 // install builds a candidate configuration, validates it with the staged binary, and commits after confirmation.
 // install 使用暂存二进制构造候选配置，经真实校验后在确认阶段提交。
-func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent) error {
+func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent) (returnErr error) {
 	prepared, err := c.matchStaged(plan)
 	if err != nil {
 		return err
@@ -986,11 +992,6 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 			return err
 		}
 	}
-	if plan.ServiceMode == tui.ServiceModeService {
-		if err := validateServiceUserAccess(plan.ServiceUser, c.servicePathChecks(plan, plan.ConfigRoot, plan.DataRoot)); err != nil {
-			return err
-		}
-	}
 	configFiles, err := c.buildConfigFiles(ctx, plan, prepared.packageData.Root)
 	if err != nil {
 		return err
@@ -1000,16 +1001,6 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 			return err
 		}
 	}
-	credentialRollback, err := c.applyCredentialUpdates(plan)
-	if err != nil {
-		return err
-	}
-	commitSucceeded := false
-	defer func() {
-		if !commitSucceeded && credentialRollback != nil {
-			credentialRollback()
-		}
-	}()
 	stopped, err := c.pauseInstalledRuntime(ctx, oldState, oldExists, plan, events)
 	if err != nil {
 		if stopped != nil {
@@ -1024,6 +1015,27 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 		}
 	}()
 	paths := state.InstallPaths{ProgramRoot: plan.ProgramRoot, ConfigRoot: plan.ConfigRoot, DataRoot: plan.DataRoot}
+	// Account selection follows package staging in the TUI, so transfer private roots only after stopping the old runtime.
+	// TUI 在包暂存之后才选择账户，因此必须先停止旧运行时，再调整私有根目录归属。
+	if plan.ServiceMode == tui.ServiceModeService {
+		finishOwnership, err := install.TransferServiceRoots(paths, plan.ServiceUser)
+		if err != nil {
+			return err
+		}
+		defer func() { returnErr = errors.Join(returnErr, finishOwnership(commitCompleted)) }()
+		if err := validateServiceUserAccess(plan.ServiceUser, c.servicePathChecks(plan, plan.ConfigRoot, plan.DataRoot)); err != nil {
+			return err
+		}
+	}
+	credentialRollback, err := c.applyCredentialUpdates(plan)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if !commitCompleted && credentialRollback != nil {
+			credentialRollback()
+		}
+	}()
 	serviceState := serviceStateForPlan(plan, c.options.ServiceName)
 	if oldExists && plan.ServiceMode != tui.ServiceModeService {
 		serviceState = oldState.Service
@@ -1039,7 +1051,6 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 		return errors.New("candidate VMM configuration or installation transaction failed")
 	}
 	commitCompleted = true
-	commitSucceeded = true
 	c.emitProgress(events, "install", "VMM installation committed")
 	if err := c.applyServiceAfterInstall(ctx, plan, result.State, oldState, oldExists, stopped); err != nil {
 		// A pre-commit service stop or uninstall has already created a runtime boundary. If
@@ -1136,7 +1147,12 @@ func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events 
 
 // serviceAction performs a real service or foreground process lifecycle action from durable state.
 // serviceAction 根据持久化状态执行真实服务或前台进程生命周期操作。
-func (c *Controller) serviceAction(ctx context.Context, request tui.OperationRequest, events chan<- tui.OperationEvent) error {
+func (c *Controller) serviceAction(ctx context.Context, request tui.OperationRequest, events chan<- tui.OperationEvent) (returnErr error) {
+	releaseLock, err := install.LockInstallation(ctx, c.options.StatePath)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
 	installed, err := c.requireState()
 	if err != nil {
 		return err
@@ -1159,6 +1175,7 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 			return errors.New("VMM service control is unavailable")
 		}
 		previousService := installed.Service
+		ownershipCommitted := false
 		if request.ServiceAction == tui.ServiceActionInstall && previousService.Name != "" {
 			return errors.New("VMM service is already registered; remove it before registering a different account")
 		}
@@ -1175,6 +1192,20 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 		}
 		switch request.ServiceAction {
 		case tui.ServiceActionInstall:
+			if c.process != nil {
+				if binder, ok := c.process.(processConfigBinder); ok {
+					binder.Bind(binaryPath, configRoot)
+				}
+				status, err := c.process.Status(ctx, binaryPath)
+				if err != nil || status.Running {
+					return errors.New("stop the foreground runtime before registering a service")
+				}
+			}
+			finishOwnership, err := install.TransferServiceRoots(installed.Paths, request.Plan.ServiceUser)
+			if err != nil {
+				return err
+			}
+			defer func() { returnErr = errors.Join(returnErr, finishOwnership(ownershipCommitted)) }()
 			servicePlan := request.Plan
 			servicePlan.ProgramRoot = installed.Paths.ProgramRoot
 			servicePlan.ConfigRoot = configRoot
@@ -1231,6 +1262,7 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 				}
 				return errors.New("VMM service state could not be saved; native service change was rolled back")
 			}
+			ownershipCommitted = true
 		}
 	} else {
 		if c.process == nil {
@@ -1437,6 +1469,19 @@ func (c *Controller) stagedSnapshot() *stagedPackage {
 	}
 	copy := *c.staged
 	return &copy
+}
+
+// discardStaged releases an abandoned package and its install lock before a different management transaction begins.
+// discardStaged 在开始另一项管理事务前释放被放弃的暂存包及安装锁。
+func (c *Controller) discardStaged() {
+	c.mu.Lock()
+	staged := c.staged
+	c.staged = nil
+	c.mu.Unlock()
+	if staged != nil {
+		staged.prepared.Close()
+		_ = os.RemoveAll(staged.root)
+	}
 }
 
 // reverifyStagedPackage extracts a fresh authenticated package before any schema or validation process runs.
