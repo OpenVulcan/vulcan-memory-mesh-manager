@@ -3,10 +3,8 @@
 package install
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/testpath"
@@ -105,7 +103,7 @@ func redirectConfigParent(t *testing.T, root string) (string, string) {
 	if err := os.Rename(parent, moved); err != nil {
 		// Windows pins the open directory against renames; this is an equivalent prevention boundary.
 		// Windows 会阻止重命名已打开的目录；该拒绝本身即构成等效的防护边界。
-		if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) {
+		if testpath.PinnedDirectoryRenameBlocked(err) {
 			t.Log("Windows rejected replacement of the pinned directory")
 			return parent, external
 		}

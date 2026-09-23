@@ -3165,7 +3165,7 @@ func (c *Controller) applyCredentialUpdates(plan tui.InstallPlan) (func(), error
 	if dryRunErr != nil {
 		return nil, errors.New("credential update is invalid")
 	}
-	original, existed, mode, err := readCredentialBackup(path)
+	original, existed, _, err := readCredentialBackup(path)
 	if err != nil {
 		return nil, errors.New("credential file could not be backed up")
 	}
@@ -3189,9 +3189,7 @@ func (c *Controller) applyCredentialUpdates(plan tui.InstallPlan) (func(), error
 				_ = credentials.RestoreAs(path, original, *serviceOwner)
 				return
 			}
-			if err := os.WriteFile(path, original, mode); err == nil {
-				_ = os.Chmod(path, mode)
-			}
+			_ = credentials.Restore(path, original)
 			return
 		}
 		_ = os.Remove(path)
@@ -3209,18 +3207,7 @@ func combinedStorageSelected(plan tui.InstallPlan) bool {
 // readCredentialBackup captures only the pre-commit bytes needed for a failure recovery path.
 // readCredentialBackup 只捕获失败恢复所需的提交前原始字节。
 func readCredentialBackup(path string) ([]byte, bool, os.FileMode, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, 0o600, nil
-	}
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return nil, false, 0, errors.New("credential path is not a regular file")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false, 0, err
-	}
-	return data, true, info.Mode().Perm(), nil
+	return credentials.ReadSnapshot(path)
 }
 
 // validateCredentialFilePath applies the same portable absolute .env rule used by credentials.

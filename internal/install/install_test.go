@@ -410,8 +410,14 @@ func TestTransactionCopySupportsSeparateSourceAndTargetRoots(t *testing.T) {
 	if len(transaction.configChanges) != 1 {
 		t.Fatalf("replacement count = %d, want 1", len(transaction.configChanges))
 	}
-	if volume := filepath.VolumeName(transaction.configChanges[0].backup.Name()); volume != filepath.VolumeName(target) {
-		t.Fatalf("backup volume = %q, target volume = %q", volume, filepath.VolumeName(target))
+	backupPath := filepath.Join(targetRoot, transaction.configChanges[0].backupName, "original")
+	backupInfo, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("backup was not created beside the target: %v", err)
+	}
+	pinnedInfo, err := transaction.configChanges[0].backup.Stat("original")
+	if err != nil || !os.SameFile(backupInfo, pinnedInfo) {
+		t.Fatalf("backup handle does not refer to the target-volume file: %v", err)
 	}
 	if err := transaction.rollback(); err != nil {
 		t.Fatal(err)

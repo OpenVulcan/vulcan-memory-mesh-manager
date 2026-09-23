@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -153,25 +152,7 @@ const (
 // be written atomically by Apply. Symlinks are rejected before reading.
 // 缺少文件时返回空文档，以便 Apply 原子地写入第一项凭据；读取前会拒绝符号链接。
 func Load(path string) (*Document, error) {
-	if err := validatePath(path); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Parse(nil)
-		}
-		return nil, errors.New("could not inspect dotenv file")
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return nil, errors.New("dotenv path must be a regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, errors.New("could not open dotenv file")
-	}
-	defer file.Close()
-	data, err := readBounded(file)
+	data, _, _, err := ReadSnapshot(path)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +162,15 @@ func Load(path string) (*Document, error) {
 	}
 	document.original = append([]byte(nil), data...)
 	return document, nil
+}
+
+// Restore atomically restores a captured dotenv document with protected credential permissions.
+// Restore 使用受保护的凭据权限原子恢复已捕获的 dotenv 文档，返回写入或权限错误。
+func Restore(path string, data []byte) error {
+	if _, err := Parse(data); err != nil {
+		return err
+	}
+	return writeAtomic(path, data)
 }
 
 // Parse validates and parses dotenv bytes while retaining the original line layout.

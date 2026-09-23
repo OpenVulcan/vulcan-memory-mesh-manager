@@ -5,6 +5,7 @@
 package credentials
 
 import (
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -65,14 +66,19 @@ func writeAtomicForOwner(path string, data []byte, owner *Owner) error {
 		return err
 	}
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".vmmm-env-*")
+	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return ErrOwnerConflict
 	}
-	temporaryPath := temporary.Name()
+	defer root.Close()
+	temporaryName := ".vmmm-env-" + rand.Text()
+	temporary, err := root.OpenFile(temporaryName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return ErrOwnerConflict
+	}
 	defer func() {
 		_ = temporary.Close()
-		_ = os.Remove(temporaryPath)
+		_ = root.Remove(temporaryName)
 	}()
 	// Ownership is assigned to the opened inode before the first secret byte is written.
 	// 在写入第一个密钥字节前，对已打开的 inode 设置目标所有权。
@@ -97,7 +103,7 @@ func writeAtomicForOwner(path string, data []byte, owner *Owner) error {
 	if err := temporary.Close(); err != nil {
 		return errors.New("could not close temporary dotenv file")
 	}
-	if err := atomicReplace(temporaryPath, path); err != nil {
+	if err := root.Rename(temporaryName, ".env"); err != nil {
 		return err
 	}
 	_ = syncDirectory(directory)
