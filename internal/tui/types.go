@@ -91,6 +91,9 @@ const (
 	// ScreenEffective shows read-only runtime values and authoritative field origins.
 	// ScreenEffective 展示只读运行时值与权威字段来源。
 	ScreenEffective
+	// ScreenSavedCheck reports a check of saved configuration without entering the installation wizard.
+	// ScreenSavedCheck 显示已保存配置的检查结果，不进入安装向导。
+	ScreenSavedCheck
 	// ScreenRunning displays the running or service-managed instance state.
 	// ScreenRunning 展示前台或服务管理实例的运行状态。
 	ScreenRunning
@@ -228,6 +231,9 @@ const (
 	// OperationValidate validates the saved configuration with the VMM CLI.
 	// OperationValidate 使用 VMM CLI 校验已保存配置。
 	OperationValidate OperationKind = "validate"
+	// OperationValidateSaved checks the installed configuration and records a successful check time.
+	// OperationValidateSaved 检查已安装配置，并记录检查通过时间。
+	OperationValidateSaved OperationKind = "validate-saved"
 	// OperationEffective reads saved or validated candidate effective configuration.
 	// OperationEffective 读取已保存或已校验候选配置的最终生效值。
 	OperationEffective OperationKind = "effective"
@@ -536,8 +542,8 @@ type InstallationSnapshot struct {
 	// Running reports whether VMM is currently reachable.
 	// Running 表示当前 VMM 是否可达。
 	Running bool
-	// LastValidation is the latest sanitized validation summary.
-	// LastValidation 是最近一次已脱敏的校验摘要。
+	// LastValidation is the RFC3339 timestamp of the last successful saved-configuration check, empty for older records.
+	// LastValidation 是最近已保存配置检查通过的 RFC3339 时间；旧登记留空，不代表当前配置仍有效。
 	LastValidation string
 }
 

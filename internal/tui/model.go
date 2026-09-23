@@ -20,6 +20,12 @@ import (
 // Model is the Bubble Tea state machine for first install and installed management.
 // Model 是首次安装与已安装管理使用的 Bubble Tea 状态机。
 type Model struct {
+	// savedValidation is independent of candidate validation so an installed check never authorizes pending writes.
+	// savedValidation 独立于候选校验，已安装配置检查不能授权尚待提交的修改。
+	savedValidation *ValidationSummary
+	// editingInstalledPATH keeps the installed PATH settings page out of the installation wizard.
+	// editingInstalledPATH 将已安装 PATH 设置页面与安装向导分开路由。
+	editingInstalledPATH bool
 	// effective is a read-only result tied to the last explicit inspection operation.
 	// effective 是最近一次明确查看操作的只读结果。
 	effective *EffectiveConfiguration
@@ -550,6 +556,11 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 		}
 		m.setScreen(ScreenService)
 	case ScreenPath:
+		if m.editingInstalledPATH {
+			m.editingInstalledPATH = false
+			m.setScreen(ScreenHome)
+			return m, nil
+		}
 		m.setScreen(ScreenService)
 	case ScreenConfigCheck:
 		m.setScreen(ScreenPath)
@@ -559,6 +570,8 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 		m.setScreen(ScreenConfirm)
 	case ScreenEffective:
 		m.setScreen(m.operationScreen)
+	case ScreenSavedCheck:
+		m.setScreen(ScreenHome)
 	case ScreenProviderTest:
 		m.setScreen(ScreenConfigCheck)
 	case ScreenRunning, ScreenDone, ScreenError:
@@ -794,6 +807,9 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 			m.setScreen(ScreenPath)
 		}
 	case ScreenPath:
+		if m.editingInstalledPATH {
+			return m, m.beginOperation(OperationRequest{Kind: OperationPath, AddToPath: m.cursor == 0})
+		}
 		m.addToPath = m.cursor == 0
 		m.plan.AddToPath = m.addToPath
 		m.invalidateValidation()
@@ -839,6 +855,10 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 	case ScreenEffective:
 		if m.cursor == 0 {
 			m.setScreen(m.operationScreen)
+		}
+	case ScreenSavedCheck:
+		if m.cursor == 0 {
+			m.setScreen(ScreenHome)
 		}
 	case ScreenProviderTest:
 		if m.cursor == 0 {
@@ -1572,6 +1592,19 @@ func (m *Model) activateHomeSelection() (tea.Model, tea.Cmd) {
 		m.status = m.label("重新下载签名包并检查配置后安装，保留数据库", "Download the signed package and validate configuration before reinstalling; keep databases")
 	case 12:
 		return m, m.beginOperation(OperationRequest{Kind: OperationEffective})
+	case 13:
+		m.plan.Repair, m.plan.Rollback, m.editingInstalled = false, false, false
+		m.plan.Version = VersionOption{}
+		m.setScreen(ScreenSource)
+		m.status = m.label("选择下载源及升级版本，保留当前配置与数据目录", "Select a source and upgrade release; keep current configuration and data roots")
+	case 14:
+		m.editingInstalledPATH = true
+		m.setScreen(ScreenPath)
+		if !m.snapshot.PathEnabled {
+			m.cursor = 1
+		}
+	case 15:
+		return m, m.beginOperation(OperationRequest{Kind: OperationValidateSaved})
 	}
 	return m, nil
 }
@@ -1617,6 +1650,9 @@ func (m *Model) activateUninstallSelection() (tea.Model, tea.Cmd) {
 // beginOperation starts a controller stream in a Bubble Tea command closure.
 // beginOperation 在 Bubble Tea 命令闭包中启动 Controller 事件流。
 func (m *Model) beginOperation(request OperationRequest) tea.Cmd {
+	if request.Kind == OperationValidateSaved {
+		m.savedValidation = nil
+	}
 	if request.Kind == OperationEffective {
 		m.effective = nil
 	}
@@ -1752,8 +1788,13 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 		m.versions = append([]VersionOption(nil), message.event.Versions...)
 	}
 	if message.event.Validation != nil {
-		m.validation = *message.event.Validation
-		m.validation.Errors = append([]string(nil), message.event.Validation.Errors...)
+		validation := *message.event.Validation
+		validation.Errors = append([]string(nil), validation.Errors...)
+		if m.operationKind == OperationValidateSaved {
+			m.savedValidation = &validation
+		} else {
+			m.validation = validation
+		}
 	}
 	if message.event.Progress.Message != "" || message.event.Progress.Stage != "" {
 		m.progress = message.event.Progress
@@ -1869,6 +1910,13 @@ func (m *Model) routeCompletedOperation() {
 			return
 		}
 		m.setScreen(ScreenEffective)
+	case OperationValidateSaved:
+		if m.savedValidation == nil {
+			m.errorMessage = m.label("运行时未返回配置检查结果", "Runtime did not return configuration check results")
+			m.setScreen(ScreenError)
+			return
+		}
+		m.setScreen(ScreenSavedCheck)
 	case OperationTestProvider:
 		m.setScreen(ScreenConfigCheck)
 	case OperationInstall:
@@ -1887,6 +1935,9 @@ func (m *Model) routeCompletedOperation() {
 		m.snapshot.Installed = false
 		m.setScreen(ScreenDone)
 	case OperationService, OperationPath, OperationRefresh:
+		if m.operationKind == OperationPath {
+			m.editingInstalledPATH = false
+		}
 		m.setScreen(ScreenHome)
 	default:
 		m.setScreen(m.operationScreen)
@@ -1926,7 +1977,7 @@ func (m *Model) itemCount() int {
 	case ScreenLanguage:
 		return 2
 	case ScreenHome:
-		return 13
+		return 16
 	case ScreenSource:
 		return len(m.sources) + 1
 	case ScreenVersion:
@@ -1965,6 +2016,8 @@ func (m *Model) itemCount() int {
 		return len(m.previewRows())
 	case ScreenEffective:
 		return len(m.effectiveRows())
+	case ScreenSavedCheck:
+		return len(m.savedCheckRows())
 	case ScreenRunning:
 		return 5
 	case ScreenUninstall:

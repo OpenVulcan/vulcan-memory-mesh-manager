@@ -32,6 +32,9 @@ type testController struct {
 	// validationValid optionally overrides the deterministic validation result.
 	// validationValid 可选地覆盖确定性的配置校验结果。
 	validationValid *bool
+	// savedValidationValid independently selects the result of checking installed configuration.
+	// savedValidationValid 独立指定已安装配置检查的结果。
+	savedValidationValid *bool
 }
 
 // Start returns one completed event for each supported operation.
@@ -55,6 +58,12 @@ func (c *testController) Start(_ context.Context, request OperationRequest) (<-c
 			validation.Errors = []string{"storage configuration is invalid"}
 		}
 		stream <- OperationEvent{Kind: OperationEventCompleted, Validation: validation}
+	case OperationValidateSaved:
+		valid := true
+		if c.savedValidationValid != nil {
+			valid = *c.savedValidationValid
+		}
+		stream <- OperationEvent{Kind: OperationEventCompleted, Validation: &ValidationSummary{Valid: valid, Errors: []string{"saved configuration needs attention"}}, Snapshot: &InstallationSnapshot{Installed: true, LastValidation: "2026-09-24T06:07:08Z"}}
 	case OperationInstall:
 		stream <- OperationEvent{Kind: OperationEventCompleted, Snapshot: &InstallationSnapshot{Installed: true, VMMVersion: "v0.1.0", Storage: request.Plan.Storage.Mode, ServiceMode: request.Plan.ServiceMode}}
 	case OperationEffective:
@@ -204,6 +213,43 @@ func TestFirstInstallStateFlow(t *testing.T) {
 		if request.Kind == OperationInstall && !request.Plan.Package.Verified {
 			t.Fatal("final install request must carry a verified staged package")
 		}
+	}
+}
+
+// TestInstalledHomeCheckPathAndUpgrade keeps saved checks separate from candidate approval and routes direct maintenance actions.
+// TestInstalledHomeCheckPathAndUpgrade 将已保存配置检查与候选审批隔离，并验证首页维护操作路由。
+func TestInstalledHomeCheckPathAndUpgrade(t *testing.T) {
+	invalid := false
+	controller := &testController{savedValidationValid: &invalid}
+	model := NewModel(ModelConfig{Controller: controller, Localizer: testLocalizer{}, Language: LanguageEnglish, Initial: InstallationSnapshot{Installed: true, VMMVersion: "v0.1.0", PathEnabled: true, LastValidation: "2026-09-23T01:02:03Z"}})
+	model.validation = ValidationSummary{Valid: true, Summary: "candidate valid"}
+	model.cursor = 15
+	model = update(t, model, press(tea.KeyEnter, ""))
+	if model.Screen() != ScreenSavedCheck || model.savedValidation == nil || model.savedValidation.Valid || !model.validation.Valid || model.snapshot.LastValidation != "2026-09-24T06:07:08Z" {
+		t.Fatalf("saved check changed candidate approval or failed to show the current result: screen=%v candidate=%+v saved=%+v snapshot=%+v", model.Screen(), model.validation, model.savedValidation, model.snapshot)
+	}
+	if len(controller.requests) != 1 || controller.requests[0].Kind != OperationValidateSaved {
+		t.Fatalf("saved check request = %+v", controller.requests)
+	}
+	model = update(t, model, press(tea.KeyEscape, ""))
+	if model.Screen() != ScreenHome {
+		t.Fatalf("saved result Escape returned to %v", model.Screen())
+	}
+	model.cursor = 14
+	model = update(t, model, press(tea.KeyEnter, ""))
+	if model.Screen() != ScreenPath || !model.editingInstalledPATH {
+		t.Fatalf("installed PATH page = %v, editing=%t", model.Screen(), model.editingInstalledPATH)
+	}
+	model.cursor = 1
+	model = update(t, model, press(tea.KeyEnter, ""))
+	if model.Screen() != ScreenHome || controller.requests[1].Kind != OperationPath || controller.requests[1].AddToPath {
+		t.Fatalf("PATH removal request = %+v, screen=%v", controller.requests[1], model.Screen())
+	}
+	model.cursor = 13
+	model.plan.Version = VersionOption{Tag: "v0.1.0", Available: true}
+	model = update(t, model, press(tea.KeyEnter, ""))
+	if model.Screen() != ScreenSource || model.plan.Version.Tag != "" || model.plan.Rollback || model.plan.Repair {
+		t.Fatalf("upgrade entry retained old selection: screen=%v plan=%+v", model.Screen(), model.plan)
 	}
 }
 

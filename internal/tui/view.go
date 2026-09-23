@@ -94,6 +94,8 @@ func (m *Model) renderPage() []string {
 		return m.renderHome()
 	case ScreenEffective:
 		return m.renderEffective()
+	case ScreenSavedCheck:
+		return m.renderSavedCheck()
 	case ScreenSource:
 		return m.renderSource()
 	case ScreenCustomSource:
@@ -193,6 +195,7 @@ func (m *Model) renderHome() []string {
 		m.label("PATH 登记：", "PATH registration: ") + boolState(snapshot.PathEnabled, m.label("由管理器拥有", "manager-owned"), m.label("无管理器所有权", "not manager-owned")),
 		m.label("配置根：", "Config root: ") + valueOrDash(snapshot.ConfigRoot),
 		m.label("数据根：", "Data root: ") + valueOrDash(snapshot.DataRoot),
+		m.label("最近校验通过：", "Last successful check: ") + valueOrDash(snapshot.LastValidation),
 		"",
 	}
 	if snapshot.Incomplete {
@@ -212,6 +215,9 @@ func (m *Model) renderHome() []string {
 		m.label("回滚到指定版本", "Roll back to a selected release"),
 		m.label("重新安装 / 修复", "Reinstall / repair"),
 		m.label("查看生效配置及来源", "View effective configuration and origins"),
+		m.label("升级到新版本", "Upgrade to a new release"),
+		m.label("设置 PATH 命令入口", "Configure PATH command entry"),
+		m.label("检查已保存配置", "Check saved configuration"),
 	} {
 		lines = append(lines, m.option(index, item))
 	}
@@ -596,11 +602,15 @@ func (m *Model) renderServiceUser() []string {
 // renderPath presents the explicit yes/no PATH choice.
 // renderPath 展示明确的是否加入 PATH 选择。
 func (m *Model) renderPath() []string {
+	removeLabel := m.label("不加入 PATH", "Do not add to PATH")
+	if m.editingInstalledPATH {
+		removeLabel = m.label("撤销管理器拥有的 PATH 登记", "Remove manager-owned PATH registration")
+	}
 	return []string{
 		m.text(i18n.KeyPathTitle, nil),
 		m.label("只写入管理器安装目录，并记录管理器拥有的条目。", "Only the manager installation root is written and ownership is recorded."),
 		m.option(0, m.text(i18n.KeyPathAdd, nil)+" (yes)"),
-		m.option(1, m.label("不加入 PATH", "Do not add to PATH")),
+		m.option(1, removeLabel),
 	}
 }
 

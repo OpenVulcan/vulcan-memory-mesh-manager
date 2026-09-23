@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSaveAndLoadRoundTrip verifies that a complete registration survives persistence.
@@ -27,6 +28,34 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load() = %#v, want %#v", got, want)
+	}
+}
+
+// TestConfigValidationTimeIsOptionalAndStrict keeps old registrations readable while rejecting false check history.
+// TestConfigValidationTimeIsOptionalAndStrict 保持旧登记可读，并拒绝伪造或无效的配置检查时间。
+func TestConfigValidationTimeIsOptionalAndStrict(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "registration.json")
+	value := validState(t)
+	if err := Save(filePath, value); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(filePath)
+	if err != nil || loaded.ConfigValidatedAt != "" {
+		t.Fatalf("legacy validation time = %q, error = %v", loaded.ConfigValidatedAt, err)
+	}
+	value.ConfigValidatedAt = time.Date(2026, time.September, 24, 6, 7, 8, 9, time.UTC).Format(time.RFC3339Nano)
+	if err := Save(filePath, value); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load(filePath)
+	if err != nil || loaded.ConfigValidatedAt != value.ConfigValidatedAt {
+		t.Fatalf("saved validation time = %q, error = %v", loaded.ConfigValidatedAt, err)
+	}
+	for _, invalid := range []string{"yesterday", "0001-01-01T00:00:00Z", "2026-09-24T06:07:08Z\nextra"} {
+		value.ConfigValidatedAt = invalid
+		if err := value.Validate(); err == nil {
+			t.Errorf("invalid validation time %q was accepted", invalid)
+		}
 	}
 }
 

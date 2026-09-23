@@ -305,3 +305,10 @@ VMM 提交 `efd6027` 对应的原生持续集成已在五个平台全部通过�
 - 新增：`internal/controller/effective.go`、`internal/controller/effective_test.go`、`internal/tui/effective.go`、`internal/tui/effective_test.go`。
 - 修改：`internal/configbridge/effective.go`、`internal/configbridge/effective_test.go`、`internal/configbridge/client_test.go`、`internal/controller/controller.go`、`internal/controller/validator_integration_test.go`、`internal/tui/types.go`、`internal/tui/model.go`、`internal/tui/model_test.go`、`internal/tui/view.go`、`internal/tui/operation_text.go`、`internal/install/data_root_windows_test.go`、`README.md`、本计划。
 - 删除：无。
+
+### 已安装维护入口与校验时间执行记录
+
+1. 核心调整：已安装首页增加升级、PATH 配置和已保存配置检查的直接入口；配置通过时间仅作为一个非敏感的历史字段保存，不参与安装完成状态判定，不引入事务恢复日志。
+2. 文件变更：新增控制器已保存配置检查与界面结果页及对应控制器测试；修改状态协议及测试、控制器调度与安装时间记录、命令入口、界面路由与测试、双语消息、仓库说明和本计划；无删除文件。
+3. 关键逻辑：检查在安装锁内读取登记、确认完成标记与受管文件完整性，调用登记的 VMM 程序和配置根；仅通过时原子保存时间，失败保留历史。界面将已保存检查结果与候选配置审批隔离；PATH 修改也使用安装锁防止并发覆盖登记。升级入口清除旧版本选择后重新探测来源。
+4. 验证及边界：状态、控制器、界面及命令四包共一百一十八项测试通过；使用标准布局真实 VMM 的全量三百八十四项测试及静态检查通过。回归确认失败升级可恢复旧文件和校验时间，同时完成标记保持未完成以要求显式重装；管理器五平台运行待本次提交后复验。VMM 第二版来源协议的原生服务烟测修复已在运行 `35888003431` 的五个平台全部通过。Certum 证书与公开发行仍未到位；最终连续无问题审核计数保持零。

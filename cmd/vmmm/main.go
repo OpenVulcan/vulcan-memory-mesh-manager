@@ -839,6 +839,7 @@ func snapshotFromState(loaded state.State, installed bool, identity platform.Ide
 		ServiceMode:    tui.ServiceModeForeground,
 		AutoStart:      loaded.Service.AutoStart,
 		PathEnabled:    loaded.PATH.Owner == state.PATHOwnerManager,
+		LastValidation: loaded.ConfigValidatedAt,
 	}
 	if loaded.Service.Name != "" {
 		snapshot.ServiceMode = tui.ServiceModeService
@@ -1034,7 +1035,7 @@ func runConfigCommand(args []string, options commandOptions, environment command
 		}
 		return 0
 	case "validate":
-		result, err := bridge.Validate(ctx)
+		result, err := runtimeValue.controller.ValidateInstalled(ctx)
 		if err != nil {
 			writeError(environment.stderr, err)
 			return 1
@@ -1110,19 +1111,25 @@ func runDoctor(options commandOptions, environment commandEnvironment) int {
 	binaryPath := filepath.Join(runtimeValue.state.Paths.ProgramRoot, filepath.FromSlash(runtimeValue.identity.VMMExecutablePath))
 	bridge, err := configbridge.New(binaryPath, runtimeValue.state.Paths.ConfigRoot)
 	if err == nil {
-		validation, err = bridge.Validate(ctx)
+		validation, err = runtimeValue.controller.ValidateInstalled(ctx)
 	}
 	if err != nil {
 		writeError(environment.stderr, err)
 		return 1
 	}
 	result.Validation = validation
+	result.Snapshot, err = runtimeValue.controller.Snapshot(ctx)
+	if err != nil {
+		writeError(environment.stderr, err)
+		return 1
+	}
+	result.Installed = result.Snapshot.Installed
 	result.Health, err = bridge.Health(ctx)
 	if err != nil {
 		writeError(environment.stderr, err)
 		return 1
 	}
-	valid := result.Validation.Valid && result.Health.Class == "ok"
+	valid := result.Installed && result.Validation.Valid && result.Health.Class == "ok"
 	if options.JSON {
 		if code := encodeJSON(environment.stdout, result); code != 0 {
 			return code

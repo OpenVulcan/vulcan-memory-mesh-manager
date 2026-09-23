@@ -665,6 +665,9 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 		err = c.install(ctx, request.Plan, events)
 	case tui.OperationValidate:
 		err = c.validate(ctx, request.Plan, events, false)
+	case tui.OperationValidateSaved:
+		c.discardStaged()
+		err = c.validateSaved(ctx, events)
 	case tui.OperationEffective:
 		if request.Plan.Version.Tag != "" {
 			err = c.validate(ctx, request.Plan, events, true)
@@ -1206,6 +1209,9 @@ func (c *Controller) install(ctx context.Context, plan tui.InstallPlan, events c
 	}
 	currentPATH = updatedState.PATH
 	pathChanged = true
+	// This is the configuration already accepted by BeginInstall; failure rollback restores the previous registration.
+	// 此处配置已经通过 BeginInstall 的权威检查；后续失败回滚会恢复原登记时间。
+	updatedState.ConfigValidatedAt = c.options.Clock().UTC().Format(time.RFC3339Nano)
 	if err := state.Save(c.options.StatePath, updatedState); err != nil {
 		return errors.New("installed VMM state could not be updated")
 	}
@@ -1550,6 +1556,13 @@ func (c *Controller) pathAction(ctx context.Context, request tui.OperationReques
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Serialize PATH and metadata updates with installation and service changes to avoid overwriting a newer registration.
+	// 将 PATH 与元数据更新同安装和服务修改串行化，避免覆盖更新后的登记。
+	releaseLock, err := install.LockInstallation(ctx, c.options.StatePath)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
 	installed, err := c.requireState()
 	if err != nil {
 		return err
@@ -2400,6 +2413,7 @@ func (c *Controller) snapshot(ctx context.Context) (tui.InstallationSnapshot, er
 	}
 	snapshot := tui.InstallationSnapshot{Installed: true, ManagerVersion: installed.ManagerVersion, VMMVersion: installed.VMM.Tag, SourceID: installed.DownloadSource.ID, ProgramRoot: installed.Paths.ProgramRoot, ConfigRoot: installed.Paths.ConfigRoot, DataRoot: installed.Paths.DataRoot, ServiceMode: tui.ServiceModeForeground, AutoStart: installed.Service.AutoStart, PathEnabled: installed.PATH.Owner == state.PATHOwnerManager, Storage: storageModeFromConfig(installed.Paths.ConfigRoot), ServiceState: "not-registered"}
 	snapshot.SourcePrefix = installed.DownloadSource.CustomPrefix
+	snapshot.LastValidation = installed.ConfigValidatedAt
 	if installed.Service.Name != "" {
 		snapshot.ServiceMode = tui.ServiceModeService
 		snapshot.ServiceState = "unverified"

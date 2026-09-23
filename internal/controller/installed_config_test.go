@@ -120,6 +120,10 @@ func TestStartupFailureRestoresPreviousConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	previousState, err := state.Load(controller.options.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	process := &fakeProcess{running: true, startErrors: []error{errors.New("candidate startup failed"), nil}}
 	controller.process = process
 	plan.ConfigFields = []tui.ConfigField{{Path: "logging.directory", Type: "string", Value: filepath.Join(plan.DataRoot, "changed-logs"), Editable: true, Changed: true}}
@@ -134,5 +138,11 @@ func TestStartupFailureRestoresPreviousConfiguration(t *testing.T) {
 	}
 	if !process.running || len(process.startErrors) != 0 {
 		t.Fatal("previous runtime was not restored")
+	}
+	recovered, err := state.Load(controller.options.StatePath)
+	// A failed upgrade restores old files and the last successful check, but keeps the completion marker clear for explicit reinstall.
+	// 升级失败后恢复旧文件和上一次通过时间，但完成标记保持未完成，要求显式重新安装。
+	if err != nil || recovered.ConfigValidatedAt != previousState.ConfigValidatedAt || recovered.InstallationComplete {
+		t.Fatalf("failed upgrade lost check history or claimed completion: %+v, error=%v", recovered, err)
 	}
 }

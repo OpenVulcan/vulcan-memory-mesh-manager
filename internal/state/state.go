@@ -14,6 +14,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -36,6 +37,9 @@ type State struct {
 	// InstallationComplete is set only after all requested installation actions succeed; absence means repair is required.
 	// InstallationComplete 仅在全部请求的安装步骤成功后设置；缺少标记时需要重新安装确认完整性。
 	InstallationComplete bool `json:"installation_complete"`
+	// ConfigValidatedAt records the last successful authoritative check, independently from installation or runtime status.
+	// ConfigValidatedAt 记录最近一次权威配置检查通过时间，与安装完成及运行状态相互独立；旧登记可省略。
+	ConfigValidatedAt string `json:"config_validated_at,omitempty"`
 	// ProtocolVersion identifies the persisted JSON protocol.
 	// ProtocolVersion 标识持久化 JSON 协议版本。
 	ProtocolVersion int `json:"protocol_version"`
@@ -200,6 +204,12 @@ type ManagedFile struct {
 // Validate checks the protocol version, required metadata, paths, and file summaries.
 // Validate 检查协议版本、必需元数据、路径和文件摘要。
 func (s State) Validate() error {
+	if s.ConfigValidatedAt != "" {
+		checked, err := time.Parse(time.RFC3339Nano, s.ConfigValidatedAt)
+		if err != nil || checked.IsZero() {
+			return errors.New("config validation time is invalid")
+		}
+	}
 	if s.ProtocolVersion != ProtocolVersion {
 		return fmt.Errorf("unsupported state protocol version %d", s.ProtocolVersion)
 	}
