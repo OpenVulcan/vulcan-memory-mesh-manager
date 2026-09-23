@@ -2236,7 +2236,9 @@ func (transaction *fileTransaction) replaceFile(source string, target string, mo
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	// Program directories must be traversable by a different service account; configuration uses replaceFileCopy.
+	// 程序目录必须允许另一服务账户穿越；私有配置目录由 replaceFileCopy 单独处理。
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(target); err == nil {

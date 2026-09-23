@@ -113,7 +113,7 @@ func TestStagePackageCreatesProtectedDataRoot(t *testing.T) {
 // TestStageAndValidateDefaultLocalStorageModes runs the actual VMM config validator when a built binary is available.
 // TestStageAndValidateDefaultLocalStorageModes 在存在已构建 VMM 二进制时运行真实配置校验。
 func TestStageAndValidateDefaultLocalStorageModes(t *testing.T) {
-	binaryPath := resolveInstallTestVMMBinary(t)
+	binaryPath := isolateInstallTestVMMLayout(t, resolveInstallTestVMMBinary(t))
 	for _, mode := range []string{"split", "controller"} {
 		t.Run(mode, func(t *testing.T) {
 			request, _, _ := newInstallRequest(t, "")
@@ -137,6 +137,26 @@ func TestStageAndValidateDefaultLocalStorageModes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// isolateInstallTestVMMLayout copies the real validator and its system config into a database-free package layout.
+// isolateInstallTestVMMLayout 将真实校验器及系统配置复制到无数据库的测试包布局，避免读取开发者已有数据目录。
+func isolateInstallTestVMMLayout(t *testing.T, sourceBinary string) string {
+	t.Helper()
+	root := t.TempDir()
+	binaryPath := filepath.Join(root, "bin", filepath.Base(sourceBinary))
+	digest, size, err := digestFile(sourceBinary)
+	if err != nil {
+		t.Fatalf("read validator binary: %v", err)
+	}
+	if err := copyVerifiedFile(sourceBinary, binaryPath, digest, size, 0o755); err != nil {
+		t.Fatalf("copy validator binary: %v", err)
+	}
+	configs := filepath.Join(filepath.Dir(filepath.Dir(sourceBinary)), "configs")
+	if err := os.CopyFS(filepath.Join(root, "configs"), os.DirFS(configs)); err != nil {
+		t.Fatalf("copy validator system configuration: %v", err)
+	}
+	return binaryPath
 }
 
 // resolveInstallTestVMMBinary locates an explicit or adjacent release binary for the real validator test.
