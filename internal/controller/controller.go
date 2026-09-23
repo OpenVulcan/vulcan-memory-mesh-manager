@@ -1585,12 +1585,16 @@ func (c *Controller) pathAction(ctx context.Context, request tui.OperationReques
 	if err != nil {
 		return err
 	}
-	pathState, err := c.applyPath(tui.InstallPlan{AddToPath: request.AddToPath, ProgramRoot: installed.Paths.ProgramRoot}, installed.Paths, installed.PATH)
+	previousPATH := installed.PATH
+	pathState, err := c.applyPath(tui.InstallPlan{AddToPath: request.AddToPath, ProgramRoot: installed.Paths.ProgramRoot}, installed.Paths, previousPATH)
 	if err != nil {
 		return err
 	}
 	installed.PATH = pathState
 	if err := state.Save(c.options.StatePath, installed); err != nil {
+		// A failed registration write must not leave a newly installed PATH entry outside durable ownership.
+		// 登记写入失败时不能留下脱离持久所有权的新 PATH 入口。
+		c.rollbackPathChange(installed.Paths, previousPATH, pathState)
 		return errors.New("PATH state could not be saved")
 	}
 	snapshot, err := c.snapshot(ctx)

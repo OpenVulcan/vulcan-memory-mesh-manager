@@ -816,6 +816,37 @@ func TestPathRollbackRemovesNewIntegration(t *testing.T) {
 	}
 }
 
+// TestPathActionRollsBackWhenStateSaveFails proves a standalone PATH action removes its new entry if registration persistence fails.
+// TestPathActionRollsBackWhenStateSaveFails 验证单独设置 PATH 后若安装登记保存失败，会撤销刚创建的命令入口。
+func TestPathActionRollsBackWhenStateSaveFails(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("fixture install failed at %s", kind)
+		}
+	}
+	var injectedErr error
+	pathAdapter := &fakePath{onInstall: func() {
+		if injectedErr = os.Remove(controller.options.StatePath); injectedErr == nil {
+			injectedErr = os.Mkdir(controller.options.StatePath, 0o700)
+		}
+	}}
+	controller.options.PathFactory = func() PathClient { return pathAdapter }
+	terminal := terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationPath, AddToPath: true}))
+	if injectedErr != nil {
+		t.Fatal(injectedErr)
+	}
+	if terminal != tui.OperationEventFailed {
+		t.Fatal("unpersisted PATH change reported success")
+	}
+	if pathAdapter.installs != 1 || pathAdapter.removes != 1 {
+		t.Fatalf("unpersisted PATH change was not removed: installs=%d removes=%d", pathAdapter.installs, pathAdapter.removes)
+	}
+	if _, err := os.Stat(pathRecordPath(controller.controlStateRoot())); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("PATH ownership receipt survived compensation: %v", err)
+	}
+}
+
 // TestServiceUserOwnershipGate verifies that Unix service registration checks real root ownership.
 // TestServiceUserOwnershipGate 验证 Unix 服务注册会检查真实的根目录归属。
 func TestServiceUserOwnershipGate(t *testing.T) {
@@ -1099,14 +1130,18 @@ func (f *fakeProcess) called(wanted string) bool {
 // fakePath supplies a valid manager-owned PATH record and records reversals.
 // fakePath 提供有效的管理器拥有 PATH 记录并记录撤销操作。
 type fakePath struct {
-	installs int
-	removes  int
+	installs  int
+	removes   int
+	onInstall func()
 }
 
 // Install returns a platform-valid manager-owned record.
 // Install 返回平台有效的管理器拥有记录。
 func (f *fakePath) Install(options pathctl.Options) (pathctl.Record, error) {
 	f.installs++
+	if f.onInstall != nil {
+		f.onInstall()
+	}
 	record := pathctl.Record{Version: pathctl.RecordVersion, Path: state.PATHState{Owner: state.PATHOwnerManager, Scope: state.PATHScopeUser}, Directory: options.Directory}
 	if runtime.GOOS == "windows" {
 		record.Method = pathctl.MethodWindowsUserPath
