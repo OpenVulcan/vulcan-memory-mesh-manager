@@ -224,9 +224,9 @@ func TestRollbackVerificationFailureRetainsBackup(t *testing.T) {
 	}
 }
 
-// TestUninstallTransactionRollsBackOnMoveFailure verifies partial staging restores the original installation.
-// TestUninstallTransactionRollsBackOnMoveFailure 验证部分暂存失败时恢复原安装。
-func TestUninstallTransactionRollsBackOnMoveFailure(t *testing.T) {
+// TestPartialUninstallCanBeReinstalled verifies a failed cleanup leaves explicit, repairable ownership.
+// TestPartialUninstallCanBeReinstalled 验证清理失败后保留明确且可修复的所有权。
+func TestPartialUninstallCanBeReinstalled(t *testing.T) {
 	root := fixtureRoot(t)
 	sourceV1 := writeFixture(t, root, "source-v1", []byte("vmmm-release-one"))
 	sourceV2 := writeFixture(t, root, "source-v2", []byte("vmmm-release-two"))
@@ -239,79 +239,76 @@ func TestUninstallTransactionRollsBackOnMoveFailure(t *testing.T) {
 	if _, err := installer.Upgrade(sourceV2, releaseV2); err != nil {
 		t.Fatalf("Upgrade() failed: %v", err)
 	}
-	failBackupMove := true
-	installer.uninstallMoveFile = func(source string, destination string) error {
-		if failBackupMove && strings.Contains(source, backupDirectoryName) {
-			failBackupMove = false
-			return errors.New("injected uninstall move failure")
+	marker := filepath.Join(root, "keep-user-data")
+	if err := os.WriteFile(marker, []byte("untouched"), 0600); err != nil {
+		t.Fatalf("write unmanaged marker: %v", err)
+	}
+	installer.uninstallRemoveFile = func(path string, release Release) error {
+		if samePath(path, installer.ExecutablePath()) {
+			return errors.New("injected executable removal failure")
 		}
-		return os.Rename(source, destination)
+		return removeOwnedFile(path, release)
 	}
-	if err := installer.Uninstall(); err == nil || !strings.Contains(err.Error(), "injected uninstall move failure") {
-		t.Fatalf("Uninstall() error = %v, want injected move failure", err)
+	if err := installer.Uninstall(); err == nil || !strings.Contains(err.Error(), "injected executable removal failure") {
+		t.Fatalf("Uninstall() error = %v, want injected failure", err)
 	}
-	if got, err := os.ReadFile(installer.ExecutablePath()); err != nil || string(got) != "vmmm-release-two" {
-		t.Fatalf("executable after rollback of failed uninstall = %q, err=%v", got, err)
+	if _, err := installer.Detect(); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("Detect() after partial uninstall error = %v, want ErrIncomplete", err)
 	}
-	if _, err := os.Stat(installer.uninstallJournalPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("uninstall journal after rollback err = %v", err)
+	if _, err := os.Stat(installer.statePath); err != nil {
+		t.Fatalf("ownership record was removed: %v", err)
 	}
-	if _, err := os.Stat(installer.uninstallTransactionPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("uninstall transaction after rollback err = %v", err)
+	installer.uninstallRemoveFile = removeOwnedFile
+	result, err := installer.Install(sourceV2, releaseV2)
+	if err != nil || result.Action != "reinstalled" {
+		t.Fatalf("Install() repair = %+v, %v", result, err)
 	}
-	installation, err := installer.Detect()
-	if err != nil {
-		t.Fatalf("Detect() after failed uninstall = %v", err)
+	installed, err := installer.Detect()
+	if err != nil || !sameRelease(installed.Current, releaseV2) || len(installed.Backups) != 0 {
+		t.Fatalf("Detect() after reinstall = %+v, %v", installed, err)
 	}
-	if !sameRelease(installation.Current, releaseV2) || len(installation.Backups) != 1 {
-		t.Fatalf("installation after failed uninstall = %+v", installation)
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "untouched" {
+		t.Fatalf("unmanaged marker = %q, %v", got, err)
 	}
 }
 
-// TestUninstallTransactionRetriesAfterCleanupFailure verifies committed cleanup resumes after a fault.
-// TestUninstallTransactionRetriesAfterCleanupFailure 验证已提交清理故障后可以恢复重试。
-func TestUninstallTransactionRetriesAfterCleanupFailure(t *testing.T) {
+// TestUninstallRetryCompletesAfterPartialRemoval verifies no restart replay is needed.
+// TestUninstallRetryCompletesAfterPartialRemoval 验证不需要重启回放即可完成部分卸载。
+func TestUninstallRetryCompletesAfterPartialRemoval(t *testing.T) {
 	root := fixtureRoot(t)
 	sourceV1 := writeFixture(t, root, "source-v1", []byte("vmmm-release-one"))
+	sourceV2 := writeFixture(t, root, "source-v2", []byte("vmmm-release-two"))
 	releaseV1 := fixtureRelease(t, sourceV1, "v0.1.0")
+	releaseV2 := fixtureRelease(t, sourceV2, "v0.2.0")
 	installer := newFixtureInstaller(t, root, filepath.Join(root, "bootstrap-vmmm"))
 	if _, err := installer.Install(sourceV1, releaseV1); err != nil {
 		t.Fatalf("initial Install() failed: %v", err)
 	}
-	failCleanup := true
+	if _, err := installer.Upgrade(sourceV2, releaseV2); err != nil {
+		t.Fatalf("Upgrade() failed: %v", err)
+	}
+	failed := false
 	installer.uninstallRemoveFile = func(path string, release Release) error {
-		if failCleanup {
-			failCleanup = false
-			return errors.New("injected uninstall cleanup failure")
+		if !failed && samePath(path, installer.ExecutablePath()) {
+			failed = true
+			return errors.New("injected cleanup failure")
 		}
 		return removeOwnedFile(path, release)
 	}
-	if err := installer.Uninstall(); err == nil || !errors.Is(err, ErrUninstallRecovery) || !strings.Contains(err.Error(), "injected uninstall cleanup failure") {
-		t.Fatalf("Uninstall() error = %v, want recoverable cleanup failure", err)
+	if err := installer.Uninstall(); err == nil || !strings.Contains(err.Error(), "injected cleanup failure") {
+		t.Fatalf("first Uninstall() error = %v", err)
 	}
-	if _, err := os.Stat(installer.ExecutablePath()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("executable after committed cleanup failure err = %v", err)
+	if err := installer.Uninstall(); err != nil {
+		t.Fatalf("explicit Uninstall() retry failed: %v", err)
 	}
-	if _, err := os.Stat(installer.statePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("state after committed cleanup failure err = %v", err)
-	}
-	if _, err := os.Stat(installer.uninstallJournalPath); err != nil {
-		t.Fatalf("journal after committed cleanup failure err = %v", err)
-	}
-	if err := installer.Uninstall(); !errors.Is(err, ErrNotInstalled) {
-		t.Fatalf("retry Uninstall() error = %v, want ErrNotInstalled after completion", err)
-	}
-	if _, err := os.Stat(installer.uninstallJournalPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("journal after retry err = %v", err)
-	}
-	if _, err := os.Stat(installer.uninstallTransactionPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("transaction after retry err = %v", err)
+	if _, err := installer.Detect(); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("Detect() after retry = %v, want ErrNotInstalled", err)
 	}
 }
 
-// TestDetectRecoversPreparedUninstallTransaction verifies a crash between staging and commit is reversible.
-// TestDetectRecoversPreparedUninstallTransaction 验证暂存与提交之间崩溃时可以恢复。
-func TestDetectRecoversPreparedUninstallTransaction(t *testing.T) {
+// TestMissingExecutableRequiresExplicitReinstall verifies detection never silently changes disk state.
+// TestMissingExecutableRequiresExplicitReinstall 验证检测不会暗中改变磁盘状态。
+func TestMissingExecutableRequiresExplicitReinstall(t *testing.T) {
 	root := fixtureRoot(t)
 	source := writeFixture(t, root, "source", []byte("vmmm-release-one"))
 	release := fixtureRelease(t, source, "v0.1.0")
@@ -319,43 +316,110 @@ func TestDetectRecoversPreparedUninstallTransaction(t *testing.T) {
 	if _, err := installer.Install(source, release); err != nil {
 		t.Fatalf("initial Install() failed: %v", err)
 	}
+	if err := os.Remove(installer.ExecutablePath()); err != nil {
+		t.Fatalf("remove owned executable: %v", err)
+	}
+	if _, err := installer.Detect(); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("Detect() error = %v, want ErrIncomplete", err)
+	}
+	if _, err := os.Stat(installer.ExecutablePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Detect() unexpectedly restored executable: %v", err)
+	}
+	result, err := installer.Install(source, release)
+	if err != nil || result.Action != "reinstalled" {
+		t.Fatalf("Install() repair = %+v, %v", result, err)
+	}
+	if _, err := installer.Detect(); err != nil {
+		t.Fatalf("Detect() after reinstall: %v", err)
+	}
+}
+
+// TestIncompleteFirstInstallCanBeRetried verifies the single completion marker survives an interruption.
+// TestIncompleteFirstInstallCanBeRetried 验证单个完成标记可支持中断后的重新安装。
+func TestIncompleteFirstInstallCanBeRetried(t *testing.T) {
+	root := fixtureRoot(t)
+	source := writeFixture(t, root, "source", []byte("vmmm-release-one"))
+	release := fixtureRelease(t, source, "v0.1.0")
+	installer := newFixtureInstaller(t, root, filepath.Join(root, "bootstrap-vmmm"))
+	if err := installer.saveRecord(persistedRecord{ProtocolVersion: ProtocolVersion, Complete: completionPointer(false), InstallRoot: root, Executable: installer.options.ExecutableName, Current: release.persisted(), Backups: []persistedBackup{}}); err != nil {
+		t.Fatalf("save interrupted first-install marker: %v", err)
+	}
+	if _, err := installer.Detect(); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("Detect() interrupted marker = %v, want ErrIncomplete", err)
+	}
+	result, err := installer.Install(source, release)
+	if err != nil || result.Action != "reinstalled" {
+		t.Fatalf("Install() retry = %+v, %v", result, err)
+	}
+	if _, err := installer.Detect(); err != nil {
+		t.Fatalf("Detect() after retry: %v", err)
+	}
+}
+
+// TestIncompleteInstallRejectsUnownedBytes verifies a marker cannot authorize an unrelated executable.
+// TestIncompleteInstallRejectsUnownedBytes 验证完成标记不能授权无关可执行文件。
+func TestIncompleteInstallRejectsUnownedBytes(t *testing.T) {
+	root := fixtureRoot(t)
+	source := writeFixture(t, root, "source", []byte("vmmm-release-one"))
+	release := fixtureRelease(t, source, "v0.1.0")
+	installer := newFixtureInstaller(t, root, filepath.Join(root, "bootstrap-vmmm"))
+	if err := installer.saveRecord(persistedRecord{ProtocolVersion: ProtocolVersion, Complete: completionPointer(false), InstallRoot: root, Executable: installer.options.ExecutableName, Current: release.persisted(), Backups: []persistedBackup{}}); err != nil {
+		t.Fatalf("save interrupted first-install marker: %v", err)
+	}
+	if err := os.WriteFile(installer.ExecutablePath(), []byte("unrelated executable"), 0755); err != nil {
+		t.Fatalf("write unrelated executable: %v", err)
+	}
+	if _, err := installer.Install(source, release); !errors.Is(err, ErrModified) {
+		t.Fatalf("Install() error = %v, want ErrModified", err)
+	}
+	if got, err := os.ReadFile(installer.ExecutablePath()); err != nil || string(got) != "unrelated executable" {
+		t.Fatalf("unrelated executable changed: %q, %v", got, err)
+	}
+}
+
+// TestLegacyCompletedRecordIsReadable verifies existing v1 ownership records remain valid.
+// TestLegacyCompletedRecordIsReadable 验证既有版本一所有权记录继续有效。
+func TestLegacyCompletedRecordIsReadable(t *testing.T) {
+	root := fixtureRoot(t)
+	source := writeFixture(t, root, "source", []byte("vmmm-release-one"))
+	release := fixtureRelease(t, source, "v0.1.0")
+	installer := newFixtureInstaller(t, root, filepath.Join(root, "bootstrap-vmmm"))
+	if _, err := installer.Install(source, release); err != nil {
+		t.Fatalf("Install() failed: %v", err)
+	}
 	record, err := installer.loadRecord()
 	if err != nil {
-		t.Fatalf("load installed state: %v", err)
+		t.Fatalf("load installed record: %v", err)
 	}
-	journal, err := installer.newUninstallJournal(record)
-	if err != nil {
-		t.Fatalf("create uninstall journal: %v", err)
+	record.ProtocolVersion = legacyProtocolVersion
+	record.Complete = nil
+	if err := installer.saveRecord(record); err != nil {
+		t.Fatalf("save legacy record: %v", err)
 	}
-	if err := installer.saveUninstallJournal(journal); err != nil {
-		t.Fatalf("save prepared uninstall journal: %v", err)
+	if _, err := installer.Detect(); err != nil {
+		t.Fatalf("Detect() legacy record: %v", err)
 	}
-	if err := installer.prepareUninstallTransactionDirectory(); err != nil {
-		t.Fatalf("prepare uninstall transaction: %v", err)
+}
+
+// TestRetiredUninstallArtifactBlocksMutation verifies old staged ownership is never silently replayed.
+// TestRetiredUninstallArtifactBlocksMutation 验证旧暂存所有权不会被暗中回放。
+func TestRetiredUninstallArtifactBlocksMutation(t *testing.T) {
+	root := fixtureRoot(t)
+	source := writeFixture(t, root, "source", []byte("vmmm-release-one"))
+	release := fixtureRelease(t, source, "v0.1.0")
+	installer := newFixtureInstaller(t, root, filepath.Join(root, "bootstrap-vmmm"))
+	artifact := filepath.Join(root, legacyUninstallJournalName)
+	if err := os.WriteFile(artifact, []byte("retired state"), 0600); err != nil {
+		t.Fatalf("write retired artifact: %v", err)
 	}
-	sourcePath, err := installer.absoluteUninstallSource(journal.Entries[0].Source)
-	if err != nil {
-		t.Fatalf("resolve uninstall source: %v", err)
+	if _, err := installer.Detect(); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("Detect() error = %v, want ErrIncomplete", err)
 	}
-	stagedPath, err := installer.absoluteUninstallStaged(journal.Entries[0].Staged)
-	if err != nil {
-		t.Fatalf("resolve uninstall staged path: %v", err)
+	if _, err := installer.Install(source, release); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("Install() error = %v, want ErrIncomplete", err)
 	}
-	if err := os.Rename(sourcePath, stagedPath); err != nil {
-		t.Fatalf("simulate staged move: %v", err)
-	}
-	installation, err := installer.Detect()
-	if err != nil {
-		t.Fatalf("Detect() recovery failed: %v", err)
-	}
-	if !sameRelease(installation.Current, release) {
-		t.Fatalf("recovered installation current = %+v, want %+v", installation.Current, release)
-	}
-	if _, err := os.Stat(installer.uninstallJournalPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("prepared journal after recovery err = %v", err)
-	}
-	if _, err := os.Stat(installer.uninstallTransactionPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("prepared transaction after recovery err = %v", err)
+	if got, err := os.ReadFile(artifact); err != nil || string(got) != "retired state" {
+		t.Fatalf("retired artifact changed: %q, %v", got, err)
 	}
 }
 

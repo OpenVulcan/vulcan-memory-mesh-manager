@@ -326,3 +326,10 @@ VMM 提交 `efd6027` 对应的原生持续集成已在五个平台全部通过�
 2. 文件变更：修改 `scripts/install.sh`、`scripts/install.ps1`、`scripts/generate_bootstrap.py`、`scripts/test_generate_bootstrap.py`、`.github/workflows/ci.yml`、`internal/controller/installed_config_test.go`、`README.md` 与本计划；无新增或删除文件。
 3. 关键逻辑：POSIX 下载子进程同时使用 curl 的 `--max-filesize` 与 shell 文件大小限制，并在摘要校验前复核真实字节数；PowerShell 在响应头和逐块写入阶段检查同一上限。微软的 `HttpCompletionOption.ResponseHeadersRead` 契约表明客户端超时只覆盖响应头，因此另以同一十分钟取消令牌覆盖全部重定向及正文异步读取。Windows 源模板和发行渲染均使用 UTF-8 BOM，POSIX 文件保留原编码及首行 shebang。超限仍进入原有私有临时目录清理路径；测试保留真实解包与重暂存锁检查，但为较慢的 Windows 原生执行留出时间。
 4. 验证与边界：本机发行相关二十一项 Python 测试、PowerShell 7 解析、Windows PowerShell 5.1 对生成脚本的执行、十次重暂存测试及全量三百八十六项 Go 测试通过；五平台持续集成尚待本次提交后运行。512 MiB 是引导层字节上限，POSIX 文件大小限制的块单位以系统 shell 为准，下载后仍明确按字节复核。正式 Certum 签名及公开下载资产验收仍被发行门禁阻止。
+
+### 管理器自安装完成状态复审
+
+1. 核心调整：复审发现管理器自身卸载仍使用独立持久化日志、暂存目录和重启自动回放，与用户取消该方案的决定不一致。现删除该流程，安装记录加入一个完成标记；中断后只报告未完成，由用户明确重新安装或重试卸载。
+2. 文件变更：修改 `internal/selfinstall/selfinstall.go`、`internal/selfinstall/selfinstall_test.go`、`cmd/vmmm/main.go`、`README.md` 与本计划；无新增或删除文件。
+3. 关键逻辑：管理器首次复制前写入未完成的所有权记录，只有程序摘要和最终记录均验证通过才置为完成。卸载先验证记录拥有的现存文件，删除时保留记录到最后，故中途失败仍可复核剩余文件；再次安装从已认证资产重建，拒绝非受管或摘要不符的文件。旧版完整记录仍可读取，重建后升级为带完成标记的记录。检测不自动回放或完成卸载；预发行版本遗留的旧卸载日志或暂存目录会明确阻止变更并要求人工检查。
+4. 验证与边界：使用隔离标准布局 VMM 的完整三百九十项管理器 Go 测试及静态检查通过；五平台原生持续集成待本次代码提交后复验。先前提交 `6342302` 的推送运行 `35890978604` 与拉取请求运行 `35890983746` 已在五个平台全部通过。Certum 证书仍在办理，正式发行门禁继续保留；连续无问题审核计数保持零。

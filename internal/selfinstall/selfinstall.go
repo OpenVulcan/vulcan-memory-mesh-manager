@@ -24,7 +24,11 @@ import (
 const (
 	// ProtocolVersion identifies the persisted self-installation record format.
 	// ProtocolVersion 标识持久化自安装记录的格式版本。
-	ProtocolVersion = 1
+	ProtocolVersion = 2
+
+	// legacyProtocolVersion accepts completed records created before the completion marker existed.
+	// legacyProtocolVersion 接受引入完成标记前生成的完整安装记录。
+	legacyProtocolVersion = 1
 
 	// defaultStateName is kept inside the selected installation root by default.
 	// defaultStateName 默认位于用户选择的安装根目录中。
@@ -38,25 +42,13 @@ const (
 	// lockFileName 是单个安装根目录的持久化内核锁锚点。
 	lockFileName = ".vmmm-install.lock"
 
-	// uninstallJournalName records an interrupted uninstall transaction.
-	// uninstallJournalName 记录被中断的卸载事务。
-	uninstallJournalName = ".vmmm-uninstall.json"
+	// legacyUninstallJournalName identifies the retired recovery journal from prerelease builds.
+	// legacyUninstallJournalName 标识预发行版本已停用的恢复日志。
+	legacyUninstallJournalName = ".vmmm-uninstall.json"
 
-	// uninstallTransactionName contains files moved during an uninstall transaction.
-	// uninstallTransactionName 包含卸载事务期间移动的文件。
-	uninstallTransactionName = ".vmmm-uninstall-txn"
-
-	// uninstallProtocolVersion identifies the uninstall journal format.
-	// uninstallProtocolVersion 标识卸载日志格式。
-	uninstallProtocolVersion = 1
-
-	// uninstallStatusPrepared means files may have been moved and must be restored.
-	// uninstallStatusPrepared 表示文件可能已移动，必须执行恢复。
-	uninstallStatusPrepared = "prepared"
-
-	// uninstallStatusCommitted means the uninstall may be safely completed.
-	// uninstallStatusCommitted 表示卸载可以安全完成。
-	uninstallStatusCommitted = "committed"
+	// legacyUninstallStageName identifies the retired staging directory from prerelease builds.
+	// legacyUninstallStageName 标识预发行版本已停用的暂存目录。
+	legacyUninstallStageName = ".vmmm-uninstall-txn"
 
 	// maxStateBytes bounds untrusted local state before JSON decoding.
 	// maxStateBytes 在 JSON 解码前限制不可信本地状态的大小。
@@ -100,9 +92,9 @@ var (
 	// ErrCorruptState 表示无法信任安装所有权记录。
 	ErrCorruptState = errors.New("self-installation state is corrupt")
 
-	// ErrUninstallRecovery means an interrupted uninstall requires another recovery attempt.
-	// ErrUninstallRecovery 表示中断的卸载需要再次执行恢复。
-	ErrUninstallRecovery = errors.New("self-installation uninstall recovery is incomplete")
+	// ErrIncomplete means owned installation files are missing and a verified reinstall can repair them.
+	// ErrIncomplete 表示受管安装文件缺失，可通过已验证的重新安装修复。
+	ErrIncomplete = errors.New("self-installation is incomplete")
 )
 
 // Options specifies the explicit permanent location and process identity used by an installer.
@@ -184,8 +176,8 @@ type Installation struct {
 // Result describes the committed self-installation operation.
 // Result 描述已经提交的自安装操作。
 type Result struct {
-	// Action is one of installed, upgraded, rolled_back, or unchanged.
-	// Action 是 installed、upgraded、rolled_back 或 unchanged 之一。
+	// Action is installed, reinstalled, upgraded, rolled_back, or unchanged.
+	// Action 是 installed、reinstalled、upgraded、rolled_back 或 unchanged 之一。
 	Action string
 
 	// Version is the release now occupying ExecutablePath.
@@ -224,14 +216,6 @@ type Installer struct {
 	// lockPath 是 InstallRoot 内的持久化内核锁锚点。
 	lockPath string
 
-	// uninstallJournalPath records an in-progress uninstall beside the executable.
-	// uninstallJournalPath 在可执行文件旁记录进行中的卸载事务。
-	uninstallJournalPath string
-
-	// uninstallTransactionPath contains staged owned files during uninstall.
-	// uninstallTransactionPath 在卸载期间包含暂存的受管文件。
-	uninstallTransactionPath string
-
 	// verifyPublishedFile verifies the new image after an atomic replacement; tests may inject a failure.
 	// verifyPublishedFile 在原子替换后验证新映像；测试可注入故障。
 	verifyPublishedFile func(string, Release) error
@@ -240,12 +224,8 @@ type Installer struct {
 	// restoreCurrentFile 在故障恢复期间恢复旧映像；测试可注入故障。
 	restoreCurrentFile func(string, Release) error
 
-	// uninstallMoveFile moves one owned file into or out of the uninstall transaction.
-	// uninstallMoveFile 将一个受管文件移入或移出卸载事务。
-	uninstallMoveFile func(string, string) error
-
-	// uninstallRemoveFile removes one staged file after ownership verification.
-	// uninstallRemoveFile 在所有权验证后删除一个暂存文件。
+	// uninstallRemoveFile removes one verified owned file; tests may inject a failure.
+	// uninstallRemoveFile 删除一个已验证的受管文件；测试可注入故障。
 	uninstallRemoveFile func(string, Release) error
 }
 
@@ -255,6 +235,10 @@ type persistedRecord struct {
 	// ProtocolVersion identifies the record format.
 	// ProtocolVersion 标识记录格式。
 	ProtocolVersion int `json:"protocol_version"`
+
+	// Complete is false until the executable and ownership record have both passed verification.
+	// Complete 在可执行文件及所有权记录均验证通过前保持为 false。
+	Complete *bool `json:"complete,omitempty"`
 
 	// InstallRoot binds the record to the explicit installation root.
 	// InstallRoot 将记录绑定到明确的安装根目录。
@@ -271,6 +255,21 @@ type persistedRecord struct {
 	// Backups contains paths relative to InstallRoot and their exact metadata.
 	// Backups 包含相对于 InstallRoot 的路径及其精确元数据。
 	Backups []persistedBackup `json:"backups"`
+}
+
+// complete reports whether a validated record has passed its final installation check.
+// complete 报告已经验证结构的记录是否通过最终安装检查。
+func (record persistedRecord) complete() bool {
+	if record.ProtocolVersion == legacyProtocolVersion {
+		return true
+	}
+	return record.Complete != nil && *record.Complete
+}
+
+// completionPointer stores an explicit marker in the versioned ownership record.
+// completionPointer 在带版本的所有权记录中保存明确的完成标记。
+func completionPointer(complete bool) *bool {
+	return &complete
 }
 
 // persistedRelease is the JSON-safe form of Release.
@@ -304,50 +303,6 @@ type persistedBackup struct {
 	Path string `json:"path"`
 	// Release is the exact release represented by Path.
 	// Release 是 Path 所代表的精确发行版本。
-	Release persistedRelease `json:"release"`
-}
-
-// uninstallJournal is the strict recovery document for a staged uninstall.
-// uninstallJournal 是暂存卸载的严格恢复文档。
-type uninstallJournal struct {
-	// ProtocolVersion identifies this journal format.
-	// ProtocolVersion 标识此日志格式。
-	ProtocolVersion int `json:"protocol_version"`
-
-	// Status selects rollback of a partial move or completion of a committed uninstall.
-	// Status 选择回滚部分移动或完成已提交的卸载。
-	Status string `json:"status"`
-
-	// InstallRoot binds the journal to one explicit installation root.
-	// InstallRoot 将日志绑定到一个明确的安装根目录。
-	InstallRoot string `json:"install_root"`
-
-	// Executable binds the journal to the managed executable basename.
-	// Executable 将日志绑定到受管可执行文件名。
-	Executable string `json:"executable"`
-
-	// StatePath binds recovery to the ownership record selected by the installer.
-	// StatePath 将恢复绑定到安装器选定的所有权记录路径。
-	StatePath string `json:"state_path"`
-
-	// Entries lists each owned executable moved to the transaction directory.
-	// Entries 列出移动到事务目录的每个受管可执行文件。
-	Entries []uninstallEntry `json:"entries"`
-}
-
-// uninstallEntry maps an owned source path to its staged path and release identity.
-// uninstallEntry 将受管源路径映射到暂存路径及其发行版本身份。
-type uninstallEntry struct {
-	// Source is relative to InstallRoot and is restored on an uncommitted transaction.
-	// Source 是相对于 InstallRoot 的路径，未提交事务时会恢复到此处。
-	Source string `json:"source"`
-
-	// Staged is relative to the fixed uninstall transaction directory.
-	// Staged 是相对于固定卸载事务目录的路径。
-	Staged string `json:"staged"`
-
-	// Release authenticates the bytes moved for this entry.
-	// Release 验证此条目移动的字节内容。
 	Release persistedRelease `json:"release"`
 }
 
@@ -417,9 +372,8 @@ func New(options Options) (*Installer, error) {
 		return nil, fmt.Errorf("state path must not be inside backup root: %w", ErrUnsafePath)
 	}
 	lockPath := filepath.Join(installRoot, lockFileName)
-	uninstallJournalPath := filepath.Join(installRoot, uninstallJournalName)
-	uninstallTransactionPath := filepath.Join(installRoot, uninstallTransactionName)
-	if samePath(statePath, lockPath) || samePath(statePath, uninstallJournalPath) || pathWithin(statePath, uninstallTransactionPath) {
+	legacyStagePath := filepath.Join(installRoot, legacyUninstallStageName)
+	if samePath(statePath, lockPath) || samePath(statePath, filepath.Join(installRoot, legacyUninstallJournalName)) || samePath(statePath, legacyStagePath) || pathWithin(statePath, legacyStagePath) {
 		return nil, fmt.Errorf("state path overlaps an installation control path: %w", ErrUnsafePath)
 	}
 
@@ -430,16 +384,13 @@ func New(options Options) (*Installer, error) {
 			CurrentExecutable: currentExecutable,
 			ExecutableName:    executableName,
 		},
-		statePath:                statePath,
-		executablePath:           executablePath,
-		backupRoot:               backupRoot,
-		lockPath:                 lockPath,
-		uninstallJournalPath:     uninstallJournalPath,
-		uninstallTransactionPath: uninstallTransactionPath,
+		statePath:      statePath,
+		executablePath: executablePath,
+		backupRoot:     backupRoot,
+		lockPath:       lockPath,
 	}
 	installer.verifyPublishedFile = verifyFile
 	installer.restoreCurrentFile = installer.restoreCurrent
-	installer.uninstallMoveFile = os.Rename
 	installer.uninstallRemoveFile = removeOwnedFile
 	return installer, nil
 }
@@ -475,18 +426,11 @@ func (i *Installer) Detect() (Installation, error) {
 	return i.detectLocked()
 }
 
-// detectLocked performs detection after any interrupted uninstall has been recovered.
-// detectLocked 在恢复中断卸载后执行检测。
+// detectLocked reports a complete installation only after every owned file has been verified.
+// detectLocked 仅在所有受管文件均验证通过后报告安装完整。
 func (i *Installer) detectLocked() (Installation, error) {
 	if err := i.valid(); err != nil {
 		return Installation{}, err
-	}
-	finished, err := i.recoverUninstallTransaction()
-	if err != nil {
-		return Installation{}, err
-	}
-	if finished {
-		return Installation{}, ErrNotInstalled
 	}
 	record, err := i.loadRecord()
 	if err != nil {
@@ -515,11 +459,14 @@ func (i *Installer) detectLocked() (Installation, error) {
 		}
 		installation.Backups = append(installation.Backups, Backup{Release: backup.Release.release(), Path: absolute})
 	}
+	if !record.complete() {
+		return Installation{}, ErrIncomplete
+	}
 	return installation, nil
 }
 
-// Install securely copies one verified single-file asset into an unoccupied permanent path.
-// Install 将一个经验证的单文件资产安全复制到未占用的永久路径。
+// Install copies a verified asset to an unoccupied path or repairs a partly removed owned installation.
+// Install 将经验证的资产复制到未占用路径，或修复部分删除的受管安装。
 func (i *Installer) Install(sourcePath string, release Release) (Result, error) {
 	lock, err := i.acquireExclusiveLock(true)
 	if err != nil {
@@ -529,26 +476,50 @@ func (i *Installer) Install(sourcePath string, release Release) (Result, error) 
 	return i.installLocked(sourcePath, release)
 }
 
-// installLocked performs first installation while holding the root lock.
-// installLocked 在持有根目录锁时执行首次安装。
+// installLocked installs or repairs while holding the root lock.
+// installLocked 在持有根目录锁时安装或修复。
 func (i *Installer) installLocked(sourcePath string, release Release) (Result, error) {
 	if err := i.valid(); err != nil {
-		return Result{}, err
-	}
-	_, err := i.recoverUninstallTransaction()
-	if err != nil {
 		return Result{}, err
 	}
 	if err := validateRelease(release); err != nil {
 		return Result{}, err
 	}
 	if record, err := i.loadRecord(); err == nil {
-		if sameRelease(record.Current.release(), release) {
-			if verifyErr := verifyFile(i.executablePath, release); verifyErr == nil {
+		if err := i.validateRecord(record); err != nil {
+			return Result{}, fmt.Errorf("%w: %v", ErrCorruptState, err)
+		}
+		currentPresent, currentErr := verifyOwnedIfPresent(i.executablePath, record.Current.release())
+		currentMatchesIncoming := false
+		if currentErr != nil {
+			// An interrupted replacement may have published the authenticated new image
+			// before the ownership record was updated. Only the exact requested digest is accepted.
+			// 替换中断时可能已发布经认证的新映像但尚未更新所有权记录；仅接受本次请求的精确摘要。
+			if verifyFile(i.executablePath, release) != nil {
+				return Result{}, fmt.Errorf("verify installed executable: %w", currentErr)
+			}
+			currentMatchesIncoming = true
+			currentPresent = true
+		}
+		missingBackup := false
+		for _, backup := range record.Backups {
+			path, pathErr := i.absoluteOwnedPath(backup.Path)
+			if pathErr != nil {
+				return Result{}, fmt.Errorf("%w: invalid rollback path: %v", ErrCorruptState, pathErr)
+			}
+			present, verifyErr := verifyOwnedIfPresent(path, backup.Release.release())
+			if verifyErr != nil {
+				return Result{}, fmt.Errorf("verify rollback %q: %w", backup.Path, verifyErr)
+			}
+			missingBackup = missingBackup || !present
+		}
+		if currentPresent && !currentMatchesIncoming && !missingBackup && record.complete() {
+			if sameRelease(record.Current.release(), release) {
 				return i.result("unchanged", release), nil
 			}
+			return Result{}, ErrAlreadyInstalled
 		}
-		return Result{}, ErrAlreadyInstalled
+		return i.reinstallIncomplete(sourcePath, release, record, currentPresent, currentMatchesIncoming)
 	} else if !errors.Is(err, ErrNotInstalled) {
 		return Result{}, err
 	}
@@ -577,6 +548,17 @@ func (i *Installer) installLocked(sourcePath string, release Release) (Result, e
 			_ = os.Remove(temporary)
 		}
 	}()
+	record := persistedRecord{
+		ProtocolVersion: ProtocolVersion,
+		Complete:        completionPointer(false),
+		InstallRoot:     i.options.InstallRoot,
+		Executable:      i.options.ExecutableName,
+		Current:         release.persisted(),
+		Backups:         []persistedBackup{},
+	}
+	if err := i.saveRecord(record); err != nil {
+		return Result{}, err
+	}
 	if err := publishNewFile(temporary, i.executablePath); err != nil {
 		return Result{}, err
 	}
@@ -585,18 +567,77 @@ func (i *Installer) installLocked(sourcePath string, release Release) (Result, e
 		_ = removeOwnedFile(i.executablePath, release)
 		return Result{}, fmt.Errorf("verify newly installed executable: %w", err)
 	}
-	record := persistedRecord{
-		ProtocolVersion: ProtocolVersion,
-		InstallRoot:     i.options.InstallRoot,
-		Executable:      i.options.ExecutableName,
-		Current:         release.persisted(),
-		Backups:         []persistedBackup{},
-	}
+	record.Complete = completionPointer(true)
 	if err := i.saveRecord(record); err != nil {
 		_ = removeOwnedFile(i.executablePath, release)
 		return Result{}, err
 	}
+	if err := i.confirmInstalledRelease(release); err != nil {
+		return Result{}, err
+	}
 	return i.result("installed", release), nil
+}
+
+// reinstallIncomplete rebuilds a missing or interrupted manager image from authenticated bytes.
+// reinstallIncomplete 使用经认证的字节重建缺失或中断替换的管理器映像。
+func (i *Installer) reinstallIncomplete(sourcePath string, release Release, record persistedRecord, currentPresent bool, currentMatchesIncoming bool) (Result, error) {
+	needsReplacement := !currentMatchesIncoming && (!currentPresent || !sameRelease(record.Current.release(), release))
+	if needsReplacement && i.isRunningExecutable() {
+		return Result{}, ErrRunningExecutable
+	}
+	// Verify the incoming asset before removing any old backup. The ownership record
+	// stays in place until the new image and every cleanup step have succeeded.
+	// 删除旧备份前先验证新资产；新映像及清理全部成功前保留所有权记录。
+	temporary, err := i.copyIntoRoot(sourcePath, release, ".vmmm-reinstall-")
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() { _ = os.Remove(temporary) }()
+	for _, backup := range record.Backups {
+		path, pathErr := i.absoluteOwnedPath(backup.Path)
+		if pathErr != nil {
+			return Result{}, fmt.Errorf("%w: invalid rollback path: %v", ErrCorruptState, pathErr)
+		}
+		if err := removeOwnedIfPresent(path, backup.Release.release(), i.uninstallRemoveFile); err != nil {
+			return Result{}, fmt.Errorf("remove previous rollback %q: %w", backup.Path, err)
+		}
+	}
+	if needsReplacement {
+		if currentPresent {
+			if err := verifyFile(i.executablePath, record.Current.release()); err != nil {
+				return Result{}, fmt.Errorf("verify executable before replacement: %w", classifyOwnedFileError(err))
+			}
+			if err := replaceFile(temporary, i.executablePath); err != nil {
+				return Result{}, err
+			}
+		} else if err := publishNewFile(temporary, i.executablePath); err != nil {
+			return Result{}, err
+		}
+	}
+	if err := verifyFile(i.executablePath, release); err != nil {
+		return Result{}, fmt.Errorf("verify reinstalled executable: %w", err)
+	}
+	updated := persistedRecord{ProtocolVersion: ProtocolVersion, Complete: completionPointer(true), InstallRoot: i.options.InstallRoot, Executable: i.options.ExecutableName, Current: release.persisted(), Backups: []persistedBackup{}}
+	if err := i.saveRecord(updated); err != nil {
+		return Result{}, err
+	}
+	if err := i.confirmInstalledRelease(release); err != nil {
+		return Result{}, err
+	}
+	return i.result("reinstalled", release), nil
+}
+
+// confirmInstalledRelease rereads the committed record and all owned files before reporting success.
+// confirmInstalledRelease 在报告成功前重新读取已提交记录和全部受管文件。
+func (i *Installer) confirmInstalledRelease(release Release) error {
+	installed, err := i.detectLocked()
+	if err != nil {
+		return fmt.Errorf("verify completed manager installation: %w", err)
+	}
+	if !sameRelease(installed.Current, release) {
+		return fmt.Errorf("%w: completed manager release differs from request", ErrCorruptState)
+	}
+	return nil
 }
 
 // Upgrade verifies a new asset, retains the old release, and atomically replaces the executable.
@@ -616,13 +657,6 @@ func (i *Installer) upgradeLocked(sourcePath string, release Release) (Result, e
 	if err := i.valid(); err != nil {
 		return Result{}, err
 	}
-	finished, err := i.recoverUninstallTransaction()
-	if err != nil {
-		return Result{}, err
-	}
-	if finished {
-		return Result{}, ErrNotInstalled
-	}
 	if err := validateRelease(release); err != nil {
 		return Result{}, err
 	}
@@ -633,9 +667,12 @@ func (i *Installer) upgradeLocked(sourcePath string, release Release) (Result, e
 	if err := i.validateRecord(record); err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrCorruptState, err)
 	}
+	if !record.complete() {
+		return Result{}, ErrIncomplete
+	}
 	current := record.Current.release()
 	if err := verifyFile(i.executablePath, current); err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrModified, err)
+		return Result{}, fmt.Errorf("verify installed executable before upgrade: %w", classifyOwnedFileError(err))
 	}
 	if _, err := i.verifyBackups(record); err != nil {
 		return Result{}, err
@@ -667,6 +704,8 @@ func (i *Installer) upgradeLocked(sourcePath string, release Release) (Result, e
 		return Result{}, i.recoverReplacementFailure(backupPath, current, "verify upgraded executable", err)
 	}
 	updated := record
+	updated.ProtocolVersion = ProtocolVersion
+	updated.Complete = completionPointer(true)
 	updated.Current = release.persisted()
 	updated.Backups = prependBackup(backupRecord, record.Backups)
 	if err := i.saveRecord(updated); err != nil {
@@ -692,13 +731,6 @@ func (i *Installer) rollbackLocked() (Result, error) {
 	if err := i.valid(); err != nil {
 		return Result{}, err
 	}
-	finished, err := i.recoverUninstallTransaction()
-	if err != nil {
-		return Result{}, err
-	}
-	if finished {
-		return Result{}, ErrNotInstalled
-	}
 	record, err := i.loadRecord()
 	if err != nil {
 		return Result{}, err
@@ -706,12 +738,15 @@ func (i *Installer) rollbackLocked() (Result, error) {
 	if err := i.validateRecord(record); err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrCorruptState, err)
 	}
+	if !record.complete() {
+		return Result{}, ErrIncomplete
+	}
 	if len(record.Backups) == 0 {
 		return Result{}, ErrRollbackUnavailable
 	}
 	current := record.Current.release()
 	if err := verifyFile(i.executablePath, current); err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrModified, err)
+		return Result{}, fmt.Errorf("verify installed executable before rollback: %w", classifyOwnedFileError(err))
 	}
 	if _, err := i.verifyBackups(record); err != nil {
 		return Result{}, err
@@ -746,6 +781,8 @@ func (i *Installer) rollbackLocked() (Result, error) {
 		return Result{}, i.recoverReplacementFailure(newCurrentBackupPath, current, "verify rolled back executable", err)
 	}
 	updated := record
+	updated.ProtocolVersion = ProtocolVersion
+	updated.Complete = completionPointer(true)
 	updated.Current = selectedRelease.persisted()
 	updated.Backups = prependBackup(newCurrentBackup, record.Backups)
 	if err := i.saveRecord(updated); err != nil {
@@ -765,18 +802,11 @@ func (i *Installer) Uninstall() error {
 	return i.uninstallLocked()
 }
 
-// uninstallLocked performs transactional removal while holding the root lock.
-// uninstallLocked 在持有根目录锁时执行事务式卸载。
+// uninstallLocked removes verified files while retaining the ownership record until the last step.
+// uninstallLocked 删除经验证的文件，并将所有权记录保留到最后一步。
 func (i *Installer) uninstallLocked() error {
 	if err := i.valid(); err != nil {
 		return err
-	}
-	finished, err := i.recoverUninstallTransaction()
-	if err != nil {
-		return err
-	}
-	if finished {
-		return ErrNotInstalled
 	}
 	record, err := i.loadRecord()
 	if err != nil {
@@ -788,37 +818,35 @@ func (i *Installer) uninstallLocked() error {
 	if i.isRunningExecutable() {
 		return ErrRunningExecutable
 	}
-	if err := verifyFile(i.executablePath, record.Current.release()); err != nil {
-		return fmt.Errorf("%w: %v", ErrModified, err)
+	if _, err := verifyOwnedIfPresent(i.executablePath, record.Current.release()); err != nil {
+		return fmt.Errorf("verify installed executable before uninstall: %w", err)
 	}
 	for _, backup := range record.Backups {
 		path, pathErr := i.absoluteOwnedPath(backup.Path)
 		if pathErr != nil {
 			return fmt.Errorf("%w: %v", ErrCorruptState, pathErr)
 		}
-		if verifyErr := verifyFile(path, backup.Release.release()); verifyErr != nil {
-			return fmt.Errorf("%w: %v", ErrModified, verifyErr)
+		if _, verifyErr := verifyOwnedIfPresent(path, backup.Release.release()); verifyErr != nil {
+			return fmt.Errorf("verify rollback %q before uninstall: %w", backup.Path, verifyErr)
 		}
 	}
-	journal, err := i.newUninstallJournal(record)
-	if err != nil {
-		return err
+	// Keep the record while deleting files, so a failed operation can be retried
+	// explicitly and every remaining path still has a verifiable owner.
+	// 删除文件时保留记录，失败后可显式重试，且剩余路径仍有可验证的所有者。
+	for _, backup := range record.Backups {
+		path, pathErr := i.absoluteOwnedPath(backup.Path)
+		if pathErr != nil {
+			return fmt.Errorf("%w: %v", ErrCorruptState, pathErr)
+		}
+		if err := removeOwnedIfPresent(path, backup.Release.release(), i.uninstallRemoveFile); err != nil {
+			return fmt.Errorf("remove rollback %q: %w", backup.Path, err)
+		}
 	}
-	if err := i.saveUninstallJournal(journal); err != nil {
-		return err
+	if err := removeOwnedIfPresent(i.executablePath, record.Current.release(), i.uninstallRemoveFile); err != nil {
+		return fmt.Errorf("remove installed executable: %w", err)
 	}
-	if err := i.prepareUninstallTransactionDirectory(); err != nil {
-		return i.rollbackPreparedUninstall(journal, fmt.Errorf("prepare uninstall transaction: %w", err))
-	}
-	if err := i.moveUninstallEntries(journal); err != nil {
-		return i.rollbackPreparedUninstall(journal, err)
-	}
-	journal.Status = uninstallStatusCommitted
-	if err := i.saveUninstallJournal(journal); err != nil {
-		return i.rollbackPreparedUninstall(journal, fmt.Errorf("commit uninstall transaction: %w", err))
-	}
-	if err := i.finalizeCommittedUninstall(journal); err != nil {
-		return fmt.Errorf("%w: finalize uninstall: %v", ErrUninstallRecovery, err)
+	if err := removeStateFile(i.statePath); err != nil {
+		return fmt.Errorf("remove self-installation state: %w", err)
 	}
 	return nil
 }
@@ -867,7 +895,7 @@ func (i *Installer) valid() error {
 	if i == nil {
 		return errors.New("self-installation client is nil")
 	}
-	if i.executablePath == "" || i.statePath == "" || i.backupRoot == "" || i.lockPath == "" || i.uninstallJournalPath == "" || i.uninstallTransactionPath == "" || i.verifyPublishedFile == nil || i.restoreCurrentFile == nil || i.uninstallMoveFile == nil || i.uninstallRemoveFile == nil {
+	if i.executablePath == "" || i.statePath == "" || i.backupRoot == "" || i.lockPath == "" || i.verifyPublishedFile == nil || i.restoreCurrentFile == nil || i.uninstallRemoveFile == nil {
 		return errors.New("self-installation client is not initialized")
 	}
 	if err := validateSecurePathChain(i.options.InstallRoot, true); err != nil {
@@ -882,526 +910,41 @@ func (i *Installer) valid() error {
 	if err := validateSecurePathChain(i.backupRoot, true); err != nil {
 		return fmt.Errorf("validate backup root before operation: %w", err)
 	}
-	if err := validateSecurePathChain(i.uninstallTransactionPath, true); err != nil {
-		return fmt.Errorf("validate uninstall transaction before operation: %w", err)
-	}
-	if err := validateSecurePathChain(filepath.Dir(i.uninstallJournalPath), true); err != nil {
-		return fmt.Errorf("validate uninstall journal parent before operation: %w", err)
-	}
-	return nil
-}
-
-// recoverUninstallTransaction restores an uncommitted transaction or completes a committed one.
-// recoverUninstallTransaction 恢复未提交事务或完成已提交事务。
-func (i *Installer) recoverUninstallTransaction() (bool, error) {
-	journal, exists, err := i.loadUninstallJournal()
-	if err != nil {
-		return false, err
-	}
-	if !exists {
-		if err := i.rejectOrRemoveOrphanUninstallDirectory(); err != nil {
-			return false, err
-		}
-		return false, nil
-	}
-	if journal.Status == uninstallStatusPrepared {
-		if err := i.requireUninstallState(journal); err != nil {
-			return false, fmt.Errorf("%w: validate prepared uninstall state: %v", ErrUninstallRecovery, err)
-		}
-		if err := i.restorePreparedUninstall(journal); err != nil {
-			return false, fmt.Errorf("%w: restore interrupted uninstall: %v", ErrUninstallRecovery, err)
-		}
-		return false, nil
-	}
-	if journal.Status == uninstallStatusCommitted {
-		if err := i.finalizeCommittedUninstall(journal); err != nil {
-			return false, fmt.Errorf("%w: finalize committed uninstall: %v", ErrUninstallRecovery, err)
-		}
-		return true, nil
-	}
-	return false, fmt.Errorf("%w: unsupported uninstall status %q", ErrUninstallRecovery, journal.Status)
-}
-
-// newUninstallJournal creates the prepared manifest from a verified ownership record.
-// newUninstallJournal 根据已验证的所有权记录创建预备清单。
-func (i *Installer) newUninstallJournal(record persistedRecord) (uninstallJournal, error) {
-	currentSource, err := filepath.Rel(i.options.InstallRoot, i.executablePath)
-	if err != nil {
-		return uninstallJournal{}, fmt.Errorf("relativize installed executable: %w", err)
-	}
-	entries := make([]uninstallEntry, 0, len(record.Backups)+1)
-	entries = append(entries, uninstallEntry{
-		Source:  filepath.ToSlash(currentSource),
-		Staged:  "current",
-		Release: record.Current,
-	})
-	for index, backup := range record.Backups {
-		entries = append(entries, uninstallEntry{
-			Source:  backup.Path,
-			Staged:  fmt.Sprintf("backup-%06d", index),
-			Release: backup.Release,
-		})
-	}
-	journal := uninstallJournal{
-		ProtocolVersion: uninstallProtocolVersion,
-		Status:          uninstallStatusPrepared,
-		InstallRoot:     i.options.InstallRoot,
-		Executable:      i.options.ExecutableName,
-		StatePath:       i.statePath,
-		Entries:         entries,
-	}
-	if err := i.validateUninstallJournal(journal); err != nil {
-		return uninstallJournal{}, fmt.Errorf("validate uninstall journal: %w", err)
-	}
-	return journal, nil
-}
-
-// validateUninstallJournal binds every transaction path to this installer and rejects ambiguous ownership.
-// validateUninstallJournal 将每个事务路径绑定到当前安装器并拒绝含糊的所有权。
-func (i *Installer) validateUninstallJournal(journal uninstallJournal) error {
-	if journal.ProtocolVersion != uninstallProtocolVersion {
-		return fmt.Errorf("unsupported uninstall protocol version %d", journal.ProtocolVersion)
-	}
-	if journal.Status != uninstallStatusPrepared && journal.Status != uninstallStatusCommitted {
-		return fmt.Errorf("unsupported uninstall status %q", journal.Status)
-	}
-	if !samePath(journal.InstallRoot, i.options.InstallRoot) {
-		return errors.New("uninstall journal root does not match installer root")
-	}
-	if journal.Executable != i.options.ExecutableName {
-		return errors.New("uninstall journal executable does not match installer executable")
-	}
-	if !samePath(journal.StatePath, i.statePath) {
-		return errors.New("uninstall journal state path does not match installer state path")
-	}
-	if journal.Entries == nil || len(journal.Entries) == 0 {
-		return errors.New("uninstall journal entries must be a non-empty array")
-	}
-	currentSource, err := filepath.Rel(i.options.InstallRoot, i.executablePath)
-	if err != nil {
-		return fmt.Errorf("relativize current uninstall source: %w", err)
-	}
-	currentSource = filepath.ToSlash(currentSource)
-	if journal.Entries[0].Source != currentSource || journal.Entries[0].Staged != "current" {
-		return errors.New("uninstall journal current entry is invalid")
-	}
-	seenSources := make(map[string]struct{}, len(journal.Entries))
-	seenStaged := make(map[string]struct{}, len(journal.Entries))
-	for index, entry := range journal.Entries {
-		if err := validateRelativePath(entry.Source); err != nil {
-			return fmt.Errorf("entry[%d] source: %w", index, err)
-		}
-		if err := validateFilename(entry.Staged); err != nil {
-			return fmt.Errorf("entry[%d] staged: %w", index, err)
-		}
-		if err := validateRelease(entry.Release.release()); err != nil {
-			return fmt.Errorf("entry[%d] release: %w", index, err)
-		}
-		source, err := i.absoluteUninstallSource(entry.Source)
-		if err != nil {
-			return fmt.Errorf("entry[%d] source: %w", index, err)
-		}
-		staged, err := i.absoluteUninstallStaged(entry.Staged)
-		if err != nil {
-			return fmt.Errorf("entry[%d] staged: %w", index, err)
-		}
-		sourceKey := canonicalPath(source)
-		if _, exists := seenSources[sourceKey]; exists {
-			return fmt.Errorf("entry[%d] source is duplicated", index)
-		}
-		seenSources[sourceKey] = struct{}{}
-		stagedKey := canonicalPath(staged)
-		if _, exists := seenStaged[stagedKey]; exists {
-			return fmt.Errorf("entry[%d] staged path is duplicated", index)
-		}
-		seenStaged[stagedKey] = struct{}{}
-	}
-	return nil
-}
-
-// requireUninstallState verifies that a prepared journal still matches the ownership record on disk.
-// requireUninstallState 验证预备日志仍与磁盘上的所有权记录一致。
-func (i *Installer) requireUninstallState(journal uninstallJournal) error {
-	record, err := i.loadRecord()
-	if err != nil {
-		return err
-	}
-	if err := i.validateRecord(record); err != nil {
-		return err
-	}
-	if len(journal.Entries) != len(record.Backups)+1 || journal.Entries[0].Release != record.Current {
-		return errors.New("uninstall journal no longer matches current release")
-	}
-	for index, backup := range record.Backups {
-		entry := journal.Entries[index+1]
-		if entry.Source != backup.Path || entry.Release != backup.Release {
-			return fmt.Errorf("uninstall journal no longer matches backup[%d]", index)
-		}
-	}
-	return nil
-}
-
-// absoluteUninstallSource resolves a journal source and limits it to the executable or backup root.
-// absoluteUninstallSource 解析日志源路径，并将其限制在可执行文件或备份根目录内。
-func (i *Installer) absoluteUninstallSource(relative string) (string, error) {
-	abs := filepath.Join(i.options.InstallRoot, filepath.FromSlash(relative))
-	if samePath(abs, i.executablePath) {
-		return abs, nil
-	}
-	if pathWithin(abs, i.backupRoot) {
-		return abs, nil
-	}
-	return "", errors.New("uninstall source escapes owned paths")
-}
-
-// absoluteUninstallStaged resolves a staged basename below the fixed transaction directory.
-// absoluteUninstallStaged 解析固定事务目录下的暂存文件名。
-func (i *Installer) absoluteUninstallStaged(name string) (string, error) {
-	if err := validateFilename(name); err != nil {
-		return "", err
-	}
-	abs := filepath.Join(i.uninstallTransactionPath, name)
-	if !pathWithin(abs, i.uninstallTransactionPath) {
-		return "", errors.New("uninstall staged path escapes transaction directory")
-	}
-	return abs, nil
-}
-
-// loadUninstallJournal reads a strict recovery journal and reports whether it exists.
-// loadUninstallJournal 读取严格恢复日志，并报告日志是否存在。
-func (i *Installer) loadUninstallJournal() (uninstallJournal, bool, error) {
-	info, err := os.Lstat(i.uninstallJournalPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return uninstallJournal{}, false, nil
-	}
-	if err != nil {
-		return uninstallJournal{}, false, fmt.Errorf("inspect uninstall journal: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || hasReparsePoint(i.uninstallJournalPath) {
-		return uninstallJournal{}, false, fmt.Errorf("%w: uninstall journal is not a regular file", ErrUninstallRecovery)
-	}
-	file, err := os.Open(i.uninstallJournalPath)
-	if err != nil {
-		return uninstallJournal{}, false, fmt.Errorf("open uninstall journal: %w", err)
-	}
-	defer file.Close()
-	openedInfo, err := file.Stat()
-	if err != nil || !os.SameFile(info, openedInfo) {
-		return uninstallJournal{}, false, fmt.Errorf("%w: uninstall journal changed while opening", ErrUninstallRecovery)
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxStateBytes+1))
-	if err != nil {
-		return uninstallJournal{}, false, fmt.Errorf("read uninstall journal: %w", err)
-	}
-	if int64(len(data)) > maxStateBytes {
-		return uninstallJournal{}, false, fmt.Errorf("%w: uninstall journal exceeds %d bytes", ErrUninstallRecovery, maxStateBytes)
-	}
-	journal, err := decodeUninstallJournal(data)
-	if err != nil {
-		return uninstallJournal{}, false, fmt.Errorf("%w: decode uninstall journal: %v", ErrUninstallRecovery, err)
-	}
-	if err := i.validateUninstallJournal(journal); err != nil {
-		return uninstallJournal{}, false, fmt.Errorf("%w: validate uninstall journal: %v", ErrUninstallRecovery, err)
-	}
-	return journal, true, nil
-}
-
-// decodeUninstallJournal rejects unknown fields, duplicate keys, and trailing JSON values.
-// decodeUninstallJournal 拒绝未知字段、重复键和尾随 JSON 值。
-func decodeUninstallJournal(data []byte) (uninstallJournal, error) {
-	if err := rejectDuplicateKeys(data); err != nil {
-		return uninstallJournal{}, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var journal uninstallJournal
-	if err := decoder.Decode(&journal); err != nil {
-		return uninstallJournal{}, err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return uninstallJournal{}, errors.New("uninstall journal contains multiple JSON values")
-		}
-		return uninstallJournal{}, err
-	}
-	return journal, nil
-}
-
-// saveUninstallJournal atomically writes a validated recovery journal beside the executable.
-// saveUninstallJournal 在可执行文件旁原子写入已验证的恢复日志。
-func (i *Installer) saveUninstallJournal(journal uninstallJournal) error {
-	if err := i.validateUninstallJournal(journal); err != nil {
-		return fmt.Errorf("validate uninstall journal before write: %w", err)
-	}
-	if err := ensureDirectory(i.options.InstallRoot, 0700); err != nil {
-		return fmt.Errorf("prepare uninstall journal directory: %w", err)
-	}
-	payload, err := json.MarshalIndent(journal, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal uninstall journal: %w", err)
-	}
-	payload = append(payload, '\n')
-	temporary, err := os.CreateTemp(i.options.InstallRoot, ".vmmm-uninstall-state-")
-	if err != nil {
-		return fmt.Errorf("create uninstall journal temporary: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	removeTemporary := true
-	defer func() {
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if err := temporary.Chmod(0600); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("set uninstall journal permissions: %w", err)
-	}
-	if _, err := temporary.Write(payload); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write uninstall journal: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("sync uninstall journal: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close uninstall journal: %w", err)
-	}
-	if info, err := os.Lstat(i.uninstallJournalPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || hasReparsePoint(i.uninstallJournalPath) {
-			return fmt.Errorf("%w: uninstall journal path is not a regular file", ErrUnsafePath)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect uninstall journal path: %w", err)
-	}
-	if err := os.Rename(temporaryPath, i.uninstallJournalPath); err != nil {
-		return fmt.Errorf("replace uninstall journal: %w", err)
-	}
-	removeTemporary = false
-	return nil
-}
-
-// prepareUninstallTransactionDirectory creates an empty secure staging directory.
-// prepareUninstallTransactionDirectory 创建空的安全暂存目录。
-func (i *Installer) prepareUninstallTransactionDirectory() error {
-	if info, err := os.Lstat(i.uninstallTransactionPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || hasReparsePoint(i.uninstallTransactionPath) {
-			return fmt.Errorf("%w: uninstall transaction path is not a secure directory", ErrUninstallRecovery)
-		}
-		entries, readErr := os.ReadDir(i.uninstallTransactionPath)
-		if readErr != nil {
-			return fmt.Errorf("read uninstall transaction directory: %w", readErr)
-		}
-		if len(entries) != 0 {
-			return fmt.Errorf("%w: uninstall transaction directory is not empty", ErrUninstallRecovery)
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect uninstall transaction directory: %w", err)
-	}
-	if err := os.Mkdir(i.uninstallTransactionPath, 0700); err != nil {
-		return fmt.Errorf("create uninstall transaction directory: %w", err)
-	}
-	return nil
-}
-
-// moveUninstallEntries stages every verified owned file before committing the uninstall.
-// moveUninstallEntries 在提交卸载前暂存每个已验证的受管文件。
-func (i *Installer) moveUninstallEntries(journal uninstallJournal) error {
-	for index, entry := range journal.Entries {
-		source, err := i.absoluteUninstallSource(entry.Source)
-		if err != nil {
-			return fmt.Errorf("entry[%d] source: %w", index, err)
-		}
-		staged, err := i.absoluteUninstallStaged(entry.Staged)
-		if err != nil {
-			return fmt.Errorf("entry[%d] staged: %w", index, err)
-		}
-		if err := verifyFile(source, entry.Release.release()); err != nil {
-			return fmt.Errorf("verify uninstall source %q: %w", entry.Source, err)
-		}
-		if _, err := os.Lstat(staged); err == nil {
-			return fmt.Errorf("%w: uninstall staged path already exists", ErrUninstallRecovery)
+	// Retired prerelease journals are never replayed. Their presence means that
+	// ownership may still reside in the old staging directory and needs inspection.
+	// 不回放已停用的预发行日志；存在这些文件时，所有权可能仍在旧暂存目录，需人工检查。
+	for _, name := range []string{legacyUninstallJournalName, legacyUninstallStageName} {
+		path := filepath.Join(i.options.InstallRoot, name)
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("%w: retired uninstall artifact %q requires manual inspection", ErrIncomplete, path)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect uninstall staged path: %w", err)
-		}
-		if err := i.uninstallMoveFile(source, staged); err != nil {
-			return fmt.Errorf("move uninstall entry %q: %w", entry.Source, err)
-		}
-		if err := verifyFile(staged, entry.Release.release()); err != nil {
-			return fmt.Errorf("verify staged uninstall entry %q: %w", entry.Staged, err)
+			return fmt.Errorf("inspect retired uninstall artifact %q: %w", path, err)
 		}
 	}
 	return nil
 }
 
-// rollbackPreparedUninstall restores staged files and removes the prepared journal when possible.
-// rollbackPreparedUninstall 恢复暂存文件，并在可能时删除预备日志。
-func (i *Installer) rollbackPreparedUninstall(journal uninstallJournal, cause error) error {
-	if err := i.restorePreparedUninstall(journal); err != nil {
-		return fmt.Errorf("%w: %v; rollback failed, transaction retained at %s: %v", ErrUninstallRecovery, cause, i.uninstallTransactionPath, err)
+// verifyOwnedIfPresent distinguishes missing owned files from modified files without following links.
+// verifyOwnedIfPresent 区分缺失与修改的受管文件，且不跟随符号链接。
+func verifyOwnedIfPresent(path string, release Release) (bool, error) {
+	err := verifyFile(path, release)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
-	return cause
+	if err != nil {
+		return false, classifyOwnedFileError(err)
+	}
+	return true, nil
 }
 
-// restorePreparedUninstall moves every staged entry back without overwriting a replacement file.
-// restorePreparedUninstall 将每个暂存条目移回，并拒绝覆盖替代文件。
-func (i *Installer) restorePreparedUninstall(journal uninstallJournal) error {
-	for index := len(journal.Entries) - 1; index >= 0; index-- {
-		entry := journal.Entries[index]
-		source, err := i.absoluteUninstallSource(entry.Source)
-		if err != nil {
-			return fmt.Errorf("entry[%d] source: %w", index, err)
-		}
-		staged, err := i.absoluteUninstallStaged(entry.Staged)
-		if err != nil {
-			return fmt.Errorf("entry[%d] staged: %w", index, err)
-		}
-		_, sourceErr := os.Lstat(source)
-		stagedInfo, stagedErr := os.Lstat(staged)
-		sourceExists := sourceErr == nil
-		stagedExists := stagedErr == nil
-		if sourceErr != nil && !errors.Is(sourceErr, os.ErrNotExist) {
-			return fmt.Errorf("inspect uninstall source %q: %w", entry.Source, sourceErr)
-		}
-		if stagedErr != nil && !errors.Is(stagedErr, os.ErrNotExist) {
-			return fmt.Errorf("inspect uninstall staged %q: %w", entry.Staged, stagedErr)
-		}
-		if sourceExists && stagedExists {
-			return fmt.Errorf("entry[%d] has both source and staged files", index)
-		}
-		if !sourceExists && !stagedExists {
-			return fmt.Errorf("entry[%d] lost both source and staged files", index)
-		}
-		if sourceExists {
-			if err := verifyFile(source, entry.Release.release()); err != nil {
-				return fmt.Errorf("verify restored uninstall source %q: %w", entry.Source, err)
-			}
-			continue
-		}
-		if stagedInfo.Mode()&os.ModeSymlink != 0 || !stagedInfo.Mode().IsRegular() || hasReparsePoint(staged) {
-			return fmt.Errorf("entry[%d] staged path is not a regular file", index)
-		}
-		if err := verifyFile(staged, entry.Release.release()); err != nil {
-			return fmt.Errorf("verify staged uninstall entry %q: %w", entry.Staged, err)
-		}
-		if err := i.uninstallMoveFile(staged, source); err != nil {
-			return fmt.Errorf("restore uninstall entry %q: %w", entry.Source, err)
-		}
-		if err := verifyFile(source, entry.Release.release()); err != nil {
-			return fmt.Errorf("verify restored uninstall entry %q: %w", entry.Source, err)
-		}
-	}
-	if err := i.removeEmptyUninstallTransactionDirectory(); err != nil {
+// removeOwnedIfPresent permits explicit uninstall retries while verifying every file that remains.
+// removeOwnedIfPresent 允许显式重试卸载，并验证每个仍存在的文件。
+func removeOwnedIfPresent(path string, release Release, remove func(string, Release) error) error {
+	present, err := verifyOwnedIfPresent(path, release)
+	if err != nil || !present {
 		return err
 	}
-	if err := removeStateFile(i.uninstallJournalPath); err != nil {
-		return fmt.Errorf("remove prepared uninstall journal: %w", err)
-	}
-	return nil
-}
-
-// finalizeCommittedUninstall removes the state and staged files, allowing retries after any failure.
-// finalizeCommittedUninstall 删除状态和暂存文件，允许在失败后重试。
-func (i *Installer) finalizeCommittedUninstall(journal uninstallJournal) error {
-	if _, err := os.Lstat(i.statePath); err == nil {
-		if err := i.requireUninstallState(journal); err != nil {
-			return fmt.Errorf("validate committed uninstall state: %w", err)
-		}
-		if err := removeStateFile(i.statePath); err != nil {
-			return fmt.Errorf("remove self-installation state: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect self-installation state during uninstall: %w", err)
-	}
-	for index, entry := range journal.Entries {
-		source, err := i.absoluteUninstallSource(entry.Source)
-		if err != nil {
-			return fmt.Errorf("entry[%d] source: %w", index, err)
-		}
-		staged, err := i.absoluteUninstallStaged(entry.Staged)
-		if err != nil {
-			return fmt.Errorf("entry[%d] staged: %w", index, err)
-		}
-		stagedInfo, stagedErr := os.Lstat(staged)
-		if errors.Is(stagedErr, os.ErrNotExist) {
-			if _, sourceErr := os.Lstat(source); sourceErr == nil {
-				return fmt.Errorf("%w: cleaned entry %q was recreated at source", ErrUninstallRecovery, entry.Source)
-			} else if !errors.Is(sourceErr, os.ErrNotExist) {
-				return fmt.Errorf("inspect cleaned source %q: %w", entry.Source, sourceErr)
-			}
-			continue
-		}
-		if stagedErr != nil {
-			return fmt.Errorf("inspect staged uninstall entry %q: %w", entry.Staged, stagedErr)
-		}
-		if stagedInfo.Mode()&os.ModeSymlink != 0 || !stagedInfo.Mode().IsRegular() || hasReparsePoint(staged) {
-			return fmt.Errorf("entry[%d] staged path is not a regular file", index)
-		}
-		if err := i.uninstallRemoveFile(staged, entry.Release.release()); err != nil {
-			return fmt.Errorf("remove staged uninstall entry %q: %w", entry.Staged, err)
-		}
-	}
-	if err := i.removeEmptyUninstallTransactionDirectory(); err != nil {
-		return err
-	}
-	if err := removeStateFile(i.uninstallJournalPath); err != nil {
-		return fmt.Errorf("remove committed uninstall journal: %w", err)
-	}
-	return nil
-}
-
-// removeEmptyUninstallTransactionDirectory removes only the known empty staging directory.
-// removeEmptyUninstallTransactionDirectory 只删除已知且为空的暂存目录。
-func (i *Installer) removeEmptyUninstallTransactionDirectory() error {
-	info, err := os.Lstat(i.uninstallTransactionPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect uninstall transaction directory: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || hasReparsePoint(i.uninstallTransactionPath) {
-		return fmt.Errorf("%w: uninstall transaction directory is not secure", ErrUninstallRecovery)
-	}
-	entries, err := os.ReadDir(i.uninstallTransactionPath)
-	if err != nil {
-		return fmt.Errorf("read uninstall transaction directory: %w", err)
-	}
-	if len(entries) != 0 {
-		return fmt.Errorf("%w: uninstall transaction directory still contains files", ErrUninstallRecovery)
-	}
-	if err := os.Remove(i.uninstallTransactionPath); err != nil {
-		return fmt.Errorf("remove uninstall transaction directory: %w", err)
-	}
-	return nil
-}
-
-// rejectOrRemoveOrphanUninstallDirectory fails closed on unknown staged files.
-// rejectOrRemoveOrphanUninstallDirectory 对未知暂存文件失败关闭。
-func (i *Installer) rejectOrRemoveOrphanUninstallDirectory() error {
-	info, err := os.Lstat(i.uninstallTransactionPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect orphan uninstall transaction: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || hasReparsePoint(i.uninstallTransactionPath) {
-		return fmt.Errorf("%w: orphan uninstall transaction is not secure", ErrUninstallRecovery)
-	}
-	entries, err := os.ReadDir(i.uninstallTransactionPath)
-	if err != nil {
-		return fmt.Errorf("read orphan uninstall transaction: %w", err)
-	}
-	if len(entries) != 0 {
-		return fmt.Errorf("%w: orphan uninstall transaction has no journal", ErrUninstallRecovery)
-	}
-	if err := os.Remove(i.uninstallTransactionPath); err != nil {
-		return fmt.Errorf("remove empty orphan uninstall transaction: %w", err)
-	}
-	return nil
+	return remove(path, release)
 }
 
 // result creates a stable caller-facing operation result.
@@ -1503,8 +1046,14 @@ func (i *Installer) saveRecord(record persistedRecord) error {
 // validateRecord binds every persisted path to this installer and rejects ambiguous ownership.
 // validateRecord 将每个持久化路径绑定到本安装器，并拒绝不明确的所有权。
 func (i *Installer) validateRecord(record persistedRecord) error {
-	if record.ProtocolVersion != ProtocolVersion {
+	if record.ProtocolVersion != ProtocolVersion && record.ProtocolVersion != legacyProtocolVersion {
 		return fmt.Errorf("unsupported protocol version %d", record.ProtocolVersion)
+	}
+	if record.ProtocolVersion == ProtocolVersion && record.Complete == nil {
+		return errors.New("installation completion marker is missing")
+	}
+	if record.ProtocolVersion == legacyProtocolVersion && record.Complete != nil {
+		return errors.New("legacy state unexpectedly contains a completion marker")
 	}
 	if !samePath(record.InstallRoot, i.options.InstallRoot) {
 		return errors.New("state install root does not match installer root")
@@ -1851,10 +1400,17 @@ func removeStateFile(path string) error {
 // classifyOwnedFileError keeps ownership failures distinguishable to callers.
 // classifyOwnedFileError 保持所有权文件错误对调用方可区分。
 func classifyOwnedFileError(err error) error {
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrModified) {
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrIncomplete
+	}
+	if errors.Is(err, ErrModified) {
 		return ErrModified
 	}
-	return err
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrModified, err)
 }
 
 // decodeStrict decodes one ownership record with unknown, duplicate, and trailing data rejected.

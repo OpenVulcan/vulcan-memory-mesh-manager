@@ -599,7 +599,7 @@ func ensurePermanentManager(options commandOptions) (string, error) {
 	}
 	existing, detectErr := installer.Detect()
 	hasExisting := detectErr == nil
-	if detectErr != nil && !errors.Is(detectErr, selfinstall.ErrNotInstalled) {
+	if detectErr != nil && !errors.Is(detectErr, selfinstall.ErrNotInstalled) && !errors.Is(detectErr, selfinstall.ErrIncomplete) && !errors.Is(detectErr, selfinstall.ErrModified) {
 		return "", fmt.Errorf("validate permanent manager installation: %w", detectErr)
 	}
 	if hasExisting && sameExecutablePath(currentExecutable, existing.ExecutablePath) {
