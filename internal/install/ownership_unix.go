@@ -50,7 +50,7 @@ func validateServiceOwnership(request Request) error {
 	if err != nil {
 		return err
 	}
-	if err := validateUnixControlStateLocation(request.StatePath, request.ManagerRoot, request.Paths); err != nil {
+	if err := validateControlStateLocation(request.StatePath, request.ManagerRoot, request.Paths); err != nil {
 		return err
 	}
 	for _, root := range []string{request.ManagerRoot, request.Paths.ProgramRoot, filepath.Dir(request.StatePath)} {

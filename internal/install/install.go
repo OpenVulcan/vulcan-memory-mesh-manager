@@ -459,10 +459,14 @@ type UninstallRequest struct {
 	// BeforeFiles reconciles native runtime and PATH state after acquiring the installation lock and before removing owned files.
 	// BeforeFiles 在取得安装锁之后、删除受管文件之前协调系统运行实例与 PATH，并返回剩余登记状态。
 	BeforeFiles func(context.Context, state.State) (state.ServiceState, state.PATHState, error)
+
+	// AfterFiles removes explicitly selected roots under the same lock once all owned program files are gone.
+	// AfterFiles 在所有受管程序文件均已删除后、同一把锁内清理明确选择的根目录。
+	AfterFiles func(context.Context, state.State) error
 }
 
-// UninstallResult reports removed and preserved files without touching ConfigRoot or DataRoot contents.
-// UninstallResult 报告已删除和已保留文件，且不触碰 ConfigRoot 或 DataRoot 内容。
+// UninstallResult reports removed and preserved program files; optional root cleanup is owned by the caller callback.
+// UninstallResult 报告已删除和已保留的程序文件；可选根目录清理由调用方回调负责。
 type UninstallResult struct {
 	// State is the remaining registration when changed files require preservation.
 	// State 是存在被修改文件需要保留时留下的登记。
@@ -683,8 +687,8 @@ func applyPrepared(ctx context.Context, request Request) (Result, error) {
 // Uninstall removes only owned files whose recorded summaries still match.
 // Uninstall 只删除登记摘要仍匹配的管理文件。
 //
-// ConfigRoot and DataRoot contents are preserved; the registration file is removed only when requested and safe.
-// ConfigRoot 与 DataRoot 内容会保留；登记文件仅在调用方请求且操作安全时删除。
+// ConfigRoot and DataRoot are preserved unless AfterFiles explicitly removes them; registration is deleted only after cleanup succeeds.
+// 除非 AfterFiles 明确清理，否则保留 ConfigRoot 和 DataRoot；清理成功后才删除登记。
 func Uninstall(ctx context.Context, request UninstallRequest) (result UninstallResult, returnErr error) {
 	if ctx == nil {
 		return UninstallResult{}, errors.New("uninstall context must not be nil")
@@ -811,16 +815,27 @@ func Uninstall(ctx context.Context, request UninstallRequest) (result UninstallR
 		if err := validateStatePath(request.StatePath); err != nil {
 			return UninstallResult{}, failTransaction(fmt.Errorf("%w: unsafe installation registration path: %v", ErrConflict, err))
 		}
-		if err := os.Remove(request.StatePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			if transaction != nil {
-				err = transaction.fail(fmt.Errorf("remove installation registration: %w", err))
-				return UninstallResult{}, err
-			}
-			return UninstallResult{}, fmt.Errorf("remove installation registration: %w", err)
+		// Persist the post-program state before irreversible config/data cleanup so a failed cleanup can be retried.
+		// 不可逆的配置和数据清理前先保存程序删除后的状态，使清理失败可再次执行。
+		if err := state.Save(request.StatePath, current); err != nil {
+			return UninstallResult{}, failTransaction(fmt.Errorf("record program removal: %w", err))
 		}
 		if transaction != nil {
 			transaction.commit()
-			transaction.cleanup()
+			if err := transaction.cleanup(); err != nil {
+				return UninstallResult{}, fmt.Errorf("clean program removal backup: %w", err)
+			}
+		}
+		if request.AfterFiles != nil {
+			if err := request.AfterFiles(ctx, current); err != nil {
+				return UninstallResult{}, err
+			}
+		}
+		if err := validateStatePath(request.StatePath); err != nil {
+			return UninstallResult{}, fmt.Errorf("%w: unsafe installation registration path: %v", ErrConflict, err)
+		}
+		if err := os.Remove(request.StatePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return UninstallResult{}, fmt.Errorf("remove installation registration: %w", err)
 		}
 		result.RegistrationDeleted = true
 		result.State = state.State{}
@@ -1084,15 +1099,10 @@ func validateRequestMetadata(request Request) error {
 	if err := validateAbsolutePath("state path", request.StatePath); err != nil {
 		return err
 	}
-	if runtime.GOOS == "windows" && !isWithin(request.Paths.DataRoot, request.StatePath) {
-		return errors.New("state path must be below data root")
-	}
-	if runtime.GOOS != "windows" {
-		// All Unix installs keep control state outside service-writable roots so later service changes and uninstall remain safe.
-		// 所有 Unix 安装都将控制状态置于服务可写根之外，确保后续切换服务和卸载仍然安全。
-		if err := validateUnixControlStateLocation(request.StatePath, request.ManagerRoot, request.Paths); err != nil {
-			return err
-		}
+	// Control state must outlive an explicitly removed data root on every platform.
+	// 所有平台的控制状态都必须在用户明确删除数据根目录后仍然可用。
+	if err := validateControlStateLocation(request.StatePath, request.ManagerRoot, request.Paths); err != nil {
+		return err
 	}
 	roots := []struct {
 		name string
@@ -1227,13 +1237,8 @@ func validateUninstallRequest(request UninstallRequest) error {
 	if err := validateAbsolutePath("state path", request.StatePath); err != nil {
 		return err
 	}
-	if runtime.GOOS == "windows" && !isWithin(request.Paths.DataRoot, request.StatePath) {
-		return errors.New("state path must be below data root")
-	}
-	if runtime.GOOS != "windows" {
-		if err := validateUnixControlStateLocation(request.StatePath, request.ManagerRoot, request.Paths); err != nil {
-			return err
-		}
+	if err := validateControlStateLocation(request.StatePath, request.ManagerRoot, request.Paths); err != nil {
+		return err
 	}
 	if pathsOverlap(request.ManagerRoot, request.Paths.ProgramRoot) || pathsOverlap(request.ManagerRoot, request.Paths.ConfigRoot) || pathsOverlap(request.ManagerRoot, request.Paths.DataRoot) || pathsOverlap(request.Paths.ProgramRoot, request.Paths.ConfigRoot) || pathsOverlap(request.Paths.ProgramRoot, request.Paths.DataRoot) || pathsOverlap(request.Paths.ConfigRoot, request.Paths.DataRoot) {
 		return errors.New("uninstall roots must not overlap")
@@ -1254,13 +1259,13 @@ func validateUninstallRequest(request UninstallRequest) error {
 	return validateStatePath(request.StatePath)
 }
 
-// validateUnixControlStateLocation excludes service-owned and executable roots from the control state.
-// validateUnixControlStateLocation 禁止把管理器控制状态放入服务可写或程序目录。
-func validateUnixControlStateLocation(statePath string, managerRoot string, paths state.InstallPaths) error {
+// validateControlStateLocation excludes install roots from the durable control state on every platform.
+// validateControlStateLocation 在所有平台排除安装根目录与持久控制状态的重叠。
+func validateControlStateLocation(statePath string, managerRoot string, paths state.InstallPaths) error {
 	controlRoot := filepath.Dir(filepath.Clean(statePath))
 	for _, root := range []string{managerRoot, paths.ProgramRoot, paths.ConfigRoot, paths.DataRoot} {
 		if pathsOverlap(controlRoot, root) {
-			return errors.New("Unix control state root must be separate from manager, program, config, and data roots")
+			return errors.New("control state root must be separate from manager, program, config, and data roots")
 		}
 	}
 	return nil

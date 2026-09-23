@@ -95,9 +95,9 @@ func readInstallTestDACL(t *testing.T, path string) string {
 	return securityDescriptor.String()
 }
 
-// TestStagePackageCreatesProtectedDataRoot verifies the real staging path prepares a VMM-compatible root.
-// TestStagePackageCreatesProtectedDataRoot 验证真实暂存路径会准备兼容 VMM 的数据根目录。
-func TestStagePackageCreatesProtectedDataRoot(t *testing.T) {
+// TestStagePackageKeepsDataRootUntouched verifies staging protects its control root without creating VMM data.
+// TestStagePackageKeepsDataRootUntouched 验证暂存仅保护控制根，不提前创建 VMM 数据目录。
+func TestStagePackageKeepsDataRootUntouched(t *testing.T) {
 	request, _, _ := newInstallRequest(t, "")
 	request.ValidateConfig = validConfigValidator(t)
 	prepared, err := StagePackage(t.Context(), request)
@@ -105,8 +105,11 @@ func TestStagePackageCreatesProtectedDataRoot(t *testing.T) {
 		t.Fatalf("StagePackage() error = %v", err)
 	}
 	defer prepared.Close()
-	if err := validateInstallPrivateDirectory(request.Paths.DataRoot); err != nil {
-		t.Fatalf("staged data-root ACL is not VMM-compatible: %v", err)
+	if _, err := os.Stat(request.Paths.DataRoot); !os.IsNotExist(err) {
+		t.Fatalf("staging unexpectedly created VMM data root: %v", err)
+	}
+	if err := validateInstallPrivateDirectory(filepath.Dir(request.StatePath)); err != nil {
+		t.Fatalf("staged control-root ACL is not protected: %v", err)
 	}
 }
 

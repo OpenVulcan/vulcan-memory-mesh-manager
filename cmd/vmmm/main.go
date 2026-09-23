@@ -534,7 +534,7 @@ func platformDefaultPaths(osName string) (defaultPaths, error) {
 			ProgramRoot: filepath.Join(baseRoot, "vmm"),
 			ConfigRoot:  filepath.Join(baseRoot, "config"),
 			DataRoot:    filepath.Join(baseRoot, "data"),
-			StatePath:   filepath.Join(baseRoot, "data", install.RegistrationFileName),
+			StatePath:   filepath.Join(baseRoot, "state", install.RegistrationFileName),
 			ManagerRoot: filepath.Join(baseRoot, "manager"),
 			CacheRoot:   filepath.Join(baseRoot, "cache"),
 		}, nil

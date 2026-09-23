@@ -127,22 +127,26 @@ func TestLoadOptionalStateUsesTheStateNotExistContract(t *testing.T) {
 	}
 }
 
-// TestUnixDefaultPathsSeparateControlAndServiceRoots verifies the privileged state boundary.
-// TestUnixDefaultPathsSeparateControlAndServiceRoots 验证管理员状态与服务可写目录分离。
-func TestUnixDefaultPathsSeparateControlAndServiceRoots(t *testing.T) {
-	for _, osName := range []string{"linux", "darwin"} {
+// TestDefaultPathsSeparateControlAndServiceRoots verifies the state boundary on every platform.
+// TestDefaultPathsSeparateControlAndServiceRoots 验证各平台控制状态与服务可写根目录分离。
+func TestDefaultPathsSeparateControlAndServiceRoots(t *testing.T) {
+	for _, osName := range []string{"windows", "linux", "darwin"} {
 		paths, err := platformDefaultPaths(osName)
 		if err != nil {
 			t.Fatalf("platformDefaultPaths(%q): %v", osName, err)
 		}
 		for _, serviceRoot := range []string{paths.ConfigRoot, paths.DataRoot} {
-			if paths.StatePath == serviceRoot || strings.HasPrefix(paths.StatePath, serviceRoot+"/") ||
-				paths.ManagerRoot == serviceRoot || strings.HasPrefix(paths.ManagerRoot, serviceRoot+"/") ||
-				paths.CacheRoot == serviceRoot || strings.HasPrefix(paths.CacheRoot, serviceRoot+"/") {
-				t.Fatalf("%s control paths overlap service-owned root %q: %#v", osName, serviceRoot, paths)
+			for _, controlPath := range []string{paths.StatePath, paths.ManagerRoot, paths.CacheRoot} {
+				if controlPath == serviceRoot || strings.HasPrefix(controlPath, serviceRoot+string(filepath.Separator)) {
+					t.Fatalf("%s control path %q overlaps service-owned root %q: %#v", osName, controlPath, serviceRoot, paths)
+				}
 			}
 		}
-		if !strings.HasPrefix(paths.ProgramRoot, "/") || !strings.HasPrefix(paths.StatePath, "/") {
+		absolute := filepath.IsAbs(paths.ProgramRoot) && filepath.IsAbs(paths.StatePath)
+		if osName != "windows" {
+			absolute = strings.HasPrefix(paths.ProgramRoot, "/") && strings.HasPrefix(paths.StatePath, "/")
+		}
+		if !absolute {
 			t.Fatalf("%s default paths are not absolute: %#v", osName, paths)
 		}
 	}

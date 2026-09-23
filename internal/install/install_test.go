@@ -98,16 +98,13 @@ func TestStagePackageSeparatesDownloadFromFinalCommit(t *testing.T) {
 	}
 }
 
-// TestInstallRejectsUnixControlStateInDataRoot prevents a CLI install from creating state that later service or uninstall operations cannot use.
-// TestInstallRejectsUnixControlStateInDataRoot 防止命令行安装创建后续服务操作或卸载无法安全使用的状态。
-func TestInstallRejectsUnixControlStateInDataRoot(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows keeps registration state below its protected data root")
-	}
+// TestInstallRejectsControlStateInDataRoot prevents data removal from deleting active control state on any platform.
+// TestInstallRejectsControlStateInDataRoot 防止任何平台的数据根目录清理删除活动控制状态。
+func TestInstallRejectsControlStateInDataRoot(t *testing.T) {
 	request, paths, _ := newInstallRequest(t, "")
 	request.ValidateConfig = validConfigValidator(t)
 	request.StatePath = filepath.Join(paths.DataRoot, RegistrationFileName)
-	if _, err := Install(context.Background(), request); err == nil || !strings.Contains(err.Error(), "Unix control state root") {
+	if _, err := Install(context.Background(), request); err == nil || !strings.Contains(err.Error(), "control state root") {
 		t.Fatalf("install with service-writable control state error = %v", err)
 	}
 }
@@ -207,6 +204,80 @@ func TestUninstallDeletesOnlyMatchingFiles(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(databasePath); string(got) != "keep" {
 		t.Fatalf("database content = %q, want preserved", got)
+	}
+}
+
+// TestUninstallCleanupFailureCanRetry verifies cleanup errors keep an incomplete registration for an explicit retry.
+// TestUninstallCleanupFailureCanRetry 验证目录清理失败后保留未完成登记，以供用户明确重试。
+func TestUninstallCleanupFailureCanRetry(t *testing.T) {
+	request, paths, _ := newInstallRequest(t, "")
+	request.ValidateConfig = validConfigValidator(t)
+	if _, err := Install(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	uninstall := UninstallRequest{
+		ManagerRoot: request.ManagerRoot, Paths: paths, StatePath: request.StatePath, DeleteRegistration: true,
+		AfterFiles: func(context.Context, state.State) error { return errors.New("cleanup failed") },
+	}
+	if _, err := Uninstall(context.Background(), uninstall); err == nil || err.Error() != "cleanup failed" {
+		t.Fatalf("first uninstall error = %v", err)
+	}
+	pending, err := state.Load(request.StatePath)
+	if err != nil || pending.InstallationComplete || len(pending.ManagedFiles) != 0 {
+		t.Fatalf("failed cleanup did not retain retryable state: %+v %v", pending, err)
+	}
+	uninstall.AfterFiles = func(context.Context, state.State) error { return nil }
+	result, err := Uninstall(context.Background(), uninstall)
+	if err != nil || !result.RegistrationDeleted {
+		t.Fatalf("explicit uninstall retry = %+v %v", result, err)
+	}
+}
+
+// TestUninstallHoldsLockThroughRootCleanup verifies another lifecycle operation cannot start during selected root removal.
+// TestUninstallHoldsLockThroughRootCleanup 验证清理所选根目录期间另一生命周期操作不能取得安装锁。
+func TestUninstallHoldsLockThroughRootCleanup(t *testing.T) {
+	request, paths, _ := newInstallRequest(t, "")
+	request.ValidateConfig = validConfigValidator(t)
+	if _, err := Install(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := Uninstall(context.Background(), UninstallRequest{
+			ManagerRoot: request.ManagerRoot, Paths: paths, StatePath: request.StatePath, DeleteRegistration: true,
+			AfterFiles: func(context.Context, state.State) error {
+				close(entered)
+				<-release
+				return nil
+			},
+		})
+		finished <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("uninstall never entered selected-root cleanup")
+	}
+	blockedContext, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	secondRelease, err := LockInstallation(blockedContext, request.StatePath)
+	cancel()
+	close(release)
+	if secondRelease != nil {
+		_ = secondRelease()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second operation obtained lock during cleanup: %v", err)
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("uninstall completion failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("uninstall did not finish after cleanup was released")
 	}
 }
 
@@ -557,12 +628,9 @@ func newInstallRequest(t *testing.T, packageRootOverride string) (Request, state
 		ConfigRoot:  filepath.Join(base, "config"),
 		DataRoot:    filepath.Join(base, "data"),
 	}
-	statePath := filepath.Join(paths.DataRoot, RegistrationFileName)
-	if runtime.GOOS != "windows" {
-		// Unix control state belongs to a separate root so the service account cannot rewrite manager registration.
-		// Unix 控制状态使用独立根目录，避免服务账户改写管理器注册记录。
-		statePath = filepath.Join(base, "control", RegistrationFileName)
-	}
+	// The control root remains separate so service-owned data can be removed under the install lock.
+	// 控制根保持独立，使服务拥有的数据能够在安装锁内删除。
+	statePath := filepath.Join(base, "control", RegistrationFileName)
 	tag := "v1.2.3"
 	commit := strings.Repeat("a", 40)
 	packageRoot := packageRootOverride

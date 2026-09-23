@@ -361,3 +361,10 @@ VMM 提交 `efd6027` 对应的原生持续集成已在五个平台全部通过�
 2. 文件变更：修改 `internal/install/install.go`、`internal/controller/controller.go`、`internal/controller/controller_test.go` 与本计划；无新增或删除文件。
 3. 关键逻辑：`install.Uninstall` 在锁内核对当前登记路径并调用 `BeforeFiles`，记录服务与 PATH 的剩余状态及未完成标记，然后仅删除摘要匹配的文件。控制器在结果确认 `RegistrationDeleted` 前拒绝清理配置和数据；安装、服务、PATH 与卸载失败都会刷新已打开界面的安装快照。锁测试在另一操作持锁时验证服务不会提前注销；修改程序文件的测试验证配置、数据、登记均保留且状态明确未完成。
 4. 验证与边界：使用真实 VMM 标准布局的本机 Go 1.25.0 全量三百九十九项测试、`go vet ./...`、二十一项发行脚本测试及差异检查通过。管理器 `3e0ed80` 的推送运行 `35895566765` 和拉取请求运行 `35895574604` 均在五个平台通过；本次修复的原生持续集成待提交后复验。Windows 安装锁位于数据根目录内，程序文件卸载与服务操作已串行化，但可选配置、数据目录清理在解锁后进行；该跨实例清理边界仍需后续复审。Certum 正式发行门禁继续保留。
+
+### Windows 控制状态隔离与完整卸载锁复审
+
+1. 核心调整：继续复审证实 Windows 默认控制登记与锁位于 VMM 数据根目录，若用户要求删除数据，原实现只能在解锁后清理，另一实例可能趁此安装。现在默认状态移到独立受保护的 `state/` 根，所有平台均拒绝控制根与程序、配置、数据或管理器根重叠；可选目录清理在安装锁内执行。发现问题后连续无问题审核计数再次归零。
+2. 文件变更：修改 `cmd/vmmm/main.go`、`cmd/vmmm/main_test.go`、`internal/install/install.go`、`internal/install/install_test.go`、`internal/install/data_root_windows_test.go`、`internal/install/ownership_unix.go`、`internal/controller/controller.go`、`internal/controller/controller_test.go`、`README.md` 与本计划；无新增或删除文件。
+3. 关键逻辑：程序文件全部移除后先把无受管文件的未完成登记持久化并清理程序备份，再调用同锁内的 `AfterFiles` 清理明确选择的配置和数据根；全部成功才删除登记。目录清理中途失败仍可用残留登记明确重试，修改过的程序文件则保持配置和数据不动。PATH 侧车收据不再在解锁后重复删除，避免误删另一实例刚登记的收据。Windows 暂存只建立独立受保护的控制根，不提前创建 VMM 数据根。
+4. 验证与边界：使用真实 VMM 标准布局的本机 Go 1.25.0 全量四百零二项测试、`go vet ./...`、二十一项发行脚本测试及差异检查通过；新增清理失败后重试与清理期间锁竞争回归。管理器 `cf24214` 的推送运行 `35896909386` 和拉取请求运行 `35896913477` 均在五个平台通过。本次控制根调整的五平台原生持续集成仍待提交后复验；Certum 正式发行门禁保持。

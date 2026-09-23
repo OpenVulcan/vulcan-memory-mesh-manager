@@ -1615,8 +1615,23 @@ func (c *Controller) uninstall(ctx context.Context, options tui.UninstallOptions
 	result, err := install.Uninstall(ctx, install.UninstallRequest{
 		ManagerRoot: c.options.ManagerRoot, Paths: installed.Paths, StatePath: c.options.StatePath, DeleteRegistration: true,
 		BeforeFiles: func(lockedContext context.Context, current state.State) (state.ServiceState, state.PATHState, error) {
-			installed = current
 			return c.prepareRuntimeRemoval(lockedContext, current, options)
+		},
+		AfterFiles: func(lockedContext context.Context, current state.State) error {
+			if err := lockedContext.Err(); err != nil {
+				return err
+			}
+			if !options.KeepConfig {
+				if err := removeOwnedRoot(current.Paths.ConfigRoot); err != nil {
+					return errors.New("VMM configuration root could not be removed")
+				}
+			}
+			if !options.KeepData {
+				if err := removeOwnedRoot(current.Paths.DataRoot); err != nil {
+					return errors.New("VMM data root could not be removed")
+				}
+			}
+			return nil
 		},
 	})
 	if err != nil {
@@ -1624,19 +1639,6 @@ func (c *Controller) uninstall(ctx context.Context, options tui.UninstallOptions
 	}
 	if !result.RegistrationDeleted {
 		return errors.New("modified VMM program files were preserved; repair or inspect them before removing configuration and data")
-	}
-	if options.RemovePath {
-		_ = os.Remove(pathRecordPath(c.controlStateRoot()))
-	}
-	if !options.KeepConfig {
-		if err := removeOwnedRoot(installed.Paths.ConfigRoot); err != nil {
-			return errors.New("VMM configuration root could not be removed")
-		}
-	}
-	if !options.KeepData {
-		if err := removeOwnedRoot(installed.Paths.DataRoot); err != nil {
-			return errors.New("VMM data root could not be removed")
-		}
 	}
 	c.emitProgress(events, "uninstall", "VMM program files were removed")
 	return nil

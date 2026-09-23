@@ -1291,11 +1291,6 @@ func newFixtureControllerAt(t *testing.T, base string) (*Controller, tui.Install
 	}
 	publicKey := ed25519.NewKeyFromSeed(testSeed(7)).Public().(ed25519.PublicKey)
 	statePath := filepath.Join(base, "control", "vmmm-state.json")
-	if runtime.GOOS == "windows" {
-		// Windows retains registration under the protected data root, unlike Unix control state.
-		// Windows 的注册状态仍放在受保护的数据根内，与 Unix 控制状态不同。
-		statePath = filepath.Join(base, "data", "vmmm-state.json")
-	}
 	options := Options{
 		ManagerVersion:        "vmmm-test",
 		ManagerRoot:           filepath.Join(base, "manager"),
