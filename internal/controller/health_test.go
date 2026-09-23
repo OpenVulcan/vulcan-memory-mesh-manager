@@ -99,6 +99,38 @@ func TestHealthFailureRestoresUpgrade(t *testing.T) {
 	}
 }
 
+// TestFailedServiceToForegroundSwitchReinstallsOldService verifies rollback restores the removed registration before restarting it.
+// TestFailedServiceToForegroundSwitchReinstallsOldService 验证切换到前台运行失败时，回滚会先恢复已移除的服务注册，再重新启动旧服务。
+func TestFailedServiceToForegroundSwitchReinstallsOldService(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	plan.ServiceMode = tui.ServiceModeService
+	plan.ServiceUser = currentServiceUser(t)
+	adapter := &fakeService{status: service.Status{State: "stopped"}}
+	controller.options.ServiceFactory = func(string) (ServiceClient, error) { return adapter, nil }
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("initial service install failed at %s", kind)
+		}
+	}
+	adapter.calls = nil
+	foregroundPlan := plan
+	foregroundPlan.ServiceMode = tui.ServiceModeForeground
+	foregroundPlan.ServiceUser = ""
+	controller.options.WaitHealthy = func(context.Context, string, string) error { return errors.New("unreachable") }
+	if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationStagePackage, Plan: foregroundPlan})) != tui.OperationEventCompleted {
+		t.Fatal("foreground package staging failed")
+	}
+	if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationInstall, Plan: foregroundPlan})) != tui.OperationEventFailed {
+		t.Fatal("unhealthy foreground switch reported success")
+	}
+	if !adapter.called("stop") || !adapter.called("uninstall") || !adapter.called("install") || !adapter.called("start") {
+		t.Fatalf("old service registration was not restored after failed switch: %v", adapter.calls)
+	}
+	if adapter.status.State != "running" || controller.process.(*fakeProcess).running {
+		t.Fatalf("runtime was not restored to the old service: service=%s process=%v", adapter.status.State, controller.process.(*fakeProcess).running)
+	}
+}
+
 // TestLifecycleRejectsUnhealthyProcess checks explicit starts use the same readiness gate.
 // TestLifecycleRejectsUnhealthyProcess 检查显式启动也经过相同的就绪门禁。
 func TestLifecycleRejectsUnhealthyProcess(t *testing.T) {

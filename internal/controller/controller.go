@@ -2269,6 +2269,11 @@ func (c *Controller) applyServiceAfterInstall(ctx context.Context, plan tui.Inst
 				return c.recoverPostCommitService(ctx, installed, old, oldExists, stopped, errors.New("old VMM service removal failed"))
 			}
 			serviceRemoved = true
+			// A later health or PATH failure must reinstall the old registration before restarting it.
+			// 后续健康检查或 PATH 操作失败时，必须先重新注册旧服务，才能重新启动。
+			if stopped != nil {
+				stopped.serviceUninstalled = true
+			}
 		}
 		installed.Service = state.ServiceState{}
 	} else {
@@ -2283,8 +2288,15 @@ func (c *Controller) applyServiceAfterInstall(ctx context.Context, plan tui.Inst
 		if newlyInstalledService == nil && serviceRemoved && oldExists && old.Service.Name != "" {
 			oldBinaryPath := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
 			if oldClient, factoryErr := c.options.ServiceFactory(oldBinaryPath); factoryErr == nil {
-				if installErr := oldClient.Install(ctx, old.Service.Name, installed.Paths.ConfigRoot, old.Service.User, old.Service.AutoStart); installErr == nil && stopped != nil && stopped.serviceWasRunning {
-					_ = oldClient.Start(ctx, old.Service.Name)
+				if installErr := oldClient.Install(ctx, old.Service.Name, installed.Paths.ConfigRoot, old.Service.User, old.Service.AutoStart); installErr == nil {
+					// The immediate compensation already restored the registration; deferred rollback only resumes it.
+					// 即时补偿已恢复服务注册；延迟回滚只需恢复运行。
+					if stopped != nil {
+						stopped.serviceUninstalled = false
+						if stopped.serviceWasRunning {
+							_ = oldClient.Start(ctx, old.Service.Name)
+						}
+					}
 				}
 			}
 		}
