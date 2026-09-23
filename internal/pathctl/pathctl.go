@@ -39,6 +39,13 @@ const (
 	// MethodUnixSystemBin creates a root-owned /usr/local/bin entry for the system manager.
 	// MethodUnixSystemBin 为系统管理器创建 root 持有的 /usr/local/bin 命令入口。
 	MethodUnixSystemBin Method = "unix-system-bin"
+
+	// MethodDarwinPathsD exposes the root-owned manager through macOS path_helper's system path directory.
+	// MethodDarwinPathsD 通过 macOS path_helper 的系统路径目录暴露 root 所有的管理器。
+	MethodDarwinPathsD Method = "darwin-paths-d"
+	// DarwinPathsFile uses the canonical system directory instead of macOS's /etc symlink.
+	// DarwinPathsFile 使用规范系统目录，避免跟随 macOS 的 /etc 链接。
+	DarwinPathsFile = "/private/etc/paths.d/vmmm"
 )
 
 const (
@@ -100,8 +107,8 @@ type Record struct {
 	// Directory 是被暴露的管理器安装目录。
 	Directory string `json:"directory"`
 
-	// ProfilePath identifies the profile file containing a managed block.
-	// ProfilePath 标识包含受管片段的 profile 文件。
+	// ProfilePath identifies the managed profile or the fixed macOS paths.d file.
+	// ProfilePath 标识受管 profile 或固定的 macOS paths.d 文件。
 	ProfilePath string `json:"profile_path,omitempty"`
 
 	// LinkPath identifies the command link created for local-bin integration.
@@ -112,8 +119,8 @@ type Record struct {
 	// TargetPath 标识受管链接应当指向的可执行文件。
 	TargetPath string `json:"target_path,omitempty"`
 
-	// AfterSHA256 records the exact Windows PATH value after manager modification.
-	// AfterSHA256 记录管理器修改后 Windows PATH 完整值的摘要。
+	// AfterSHA256 records the exact Windows PATH value or owned macOS paths.d file content.
+	// AfterSHA256 记录 Windows PATH 完整值或受管 macOS paths.d 文件内容的摘要。
 	AfterSHA256 string `json:"after_sha256,omitempty"`
 
 	// AfterType records the Windows registry type observed after manager modification.
@@ -137,7 +144,7 @@ func (r Record) Validate() error {
 	if r.Path.Owner != state.PATHOwnerManager && r.Path.Owner != state.PATHOwnerExternal {
 		return fmt.Errorf("path record owner must be manager or external")
 	}
-	if r.Method == MethodUnixSystemBin {
+	if r.Method == MethodUnixSystemBin || r.Method == MethodDarwinPathsD {
 		if r.Path.Scope != state.PATHScopeSystem {
 			return fmt.Errorf("system command record scope must be system")
 		}
@@ -148,6 +155,16 @@ func (r Record) Validate() error {
 		return err
 	}
 	switch r.Method {
+	case MethodDarwinPathsD:
+		if r.ProfilePath != DarwinPathsFile || r.LinkPath != "" || r.TargetPath != "" || r.BlockSHA256 != "" || r.AfterType != 0 || !validSHA256(r.AfterSHA256) {
+			return errors.New("macOS path record metadata is invalid")
+		}
+		if len(r.Path.Entries) != 1 || r.Path.Entries[0] != filepath.Clean(r.Directory) {
+			return errors.New("macOS path record entry does not match directory")
+		}
+		if _, err := darwinPathContent(r.Directory); err != nil {
+			return err
+		}
 	case MethodWindowsUserPath:
 		if strings.ContainsRune(r.Directory, ';') {
 			return errors.New("windows directory must not contain the PATH separator")
@@ -238,6 +255,13 @@ func validateOptions(options Options) error {
 		return err
 	}
 	switch options.Method {
+	case MethodDarwinPathsD:
+		if options.ProfilePath != DarwinPathsFile || options.LinkPath != "" || options.TargetPath != "" {
+			return errors.New("macOS paths.d options require the fixed system file only")
+		}
+		if _, err := darwinPathContent(options.Directory); err != nil {
+			return err
+		}
 	case MethodWindowsUserPath:
 		if options.ProfilePath != "" || options.LinkPath != "" || options.TargetPath != "" {
 			return errors.New("windows path options contain POSIX fields")
@@ -269,6 +293,18 @@ func validateOptions(options Options) error {
 		return fmt.Errorf("unsupported path method %q", options.Method)
 	}
 	return nil
+}
+
+// darwinPathContent returns one path_helper entry and rejects shell-active or PATH-separator characters.
+// darwinPathContent 返回单条 path_helper 路径，拒绝 shell 活跃字符和 PATH 分隔符，避免登录脚本解释路径内容。
+func darwinPathContent(directory string) ([]byte, error) {
+	if err := validateAbsoluteText("directory", directory); err != nil {
+		return nil, err
+	}
+	if strings.ContainsAny(directory, ":\\`$\"'") {
+		return nil, errors.New("macOS manager directory contains unsupported path_helper characters")
+	}
+	return []byte(filepath.Clean(directory) + "\n"), nil
 }
 
 // validateAbsoluteText rejects relative paths and control characters.

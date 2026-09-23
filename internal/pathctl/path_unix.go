@@ -90,6 +90,8 @@ func (c *Controller) Install(options Options) (Record, error) {
 		return Record{}, fmt.Errorf("validate POSIX PATH options: %w", err)
 	}
 	switch options.Method {
+	case MethodDarwinPathsD:
+		return c.installDarwinPaths(options)
 	case MethodUnixProfile:
 		return c.installProfile(options)
 	case MethodUnixLocalBin, MethodUnixSystemBin:
@@ -114,6 +116,8 @@ func (c *Controller) Remove(record Record) error {
 		return nil
 	}
 	switch record.Method {
+	case MethodDarwinPathsD:
+		return c.removeDarwinPaths(record)
 	case MethodUnixProfile:
 		return c.removeProfile(record)
 	case MethodUnixLocalBin, MethodUnixSystemBin:

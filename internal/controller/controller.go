@@ -2355,6 +2355,9 @@ func (c *Controller) defaultPathOptions() (pathctl.Options, error) {
 		return pathctl.Options{Method: pathctl.MethodWindowsUserPath, Directory: c.options.ManagerRoot}, nil
 	}
 	if os.Geteuid() == 0 {
+		if runtime.GOOS == "darwin" {
+			return pathctl.Options{Method: pathctl.MethodDarwinPathsD, Directory: c.options.ManagerRoot, ProfilePath: pathctl.DarwinPathsFile}, nil
+		}
 		return pathctl.Options{Method: pathctl.MethodUnixSystemBin, Directory: c.options.ManagerRoot, LinkPath: "/usr/local/bin/vmmm", TargetPath: filepath.Join(c.options.ManagerRoot, c.identity.ManagerExecutableName)}, nil
 	}
 	home, err := os.UserHomeDir()

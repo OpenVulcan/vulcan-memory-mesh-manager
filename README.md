@@ -58,7 +58,7 @@ vmmm upgrade|rollback       打开 TUI 选择发行包
 vmmm uninstall              默认保留配置和数据
 ```
 
-完整参数见 `vmmm --help`。Linux/macOS 的管理器程序、安装登记与锁由 root 持有；服务使用安装时明确选定的任意本机账户，配置与数据根由该账户持有。两种运行方式均将 `logging.directory` 设为数据根下的 `logs`，使后续转为服务时无需写入管理员持有的程序包；旧安装若缺少此字段，须先在高级配置中设置可写的绝对日志路径。TUI 会要求确认账户，命令行注册服务可用 `--user` 指定。普通用户运行永久安装的 `vmmm` 时，管理器先核验该程序及其父目录，再通过 `/usr/bin/sudo` 打开 TUI 或执行管理命令；首次引导脚本在提权后重新复制并核对固定 SHA-256。选择加入 PATH 后，Unix 在 `/usr/local/bin/vmmm` 建立管理员控制的命令入口。切换命令行/服务方式前会检查配置、程序和数据路径的归属及访问权限。默认卸载保留配置和数据库；删除它们需显式选项。
+完整参数见 `vmmm --help`。Linux/macOS 的管理器程序、安装登记与锁由 root 持有；服务使用安装时明确选定的任意本机账户，配置与数据根由该账户持有。两种运行方式均将 `logging.directory` 设为数据根下的 `logs`，使后续转为服务时无需写入管理员持有的程序包；旧安装若缺少此字段，须先在高级配置中设置可写的绝对日志路径。TUI 会要求确认账户，命令行注册服务可用 `--user` 指定。普通用户运行永久安装的 `vmmm` 时，管理器先核验该程序及其父目录，再通过 `/usr/bin/sudo` 打开 TUI 或执行管理命令；首次引导脚本在提权后重新复制并核对固定 SHA-256。选择加入 PATH 后，Linux 在 `/usr/local/bin/vmmm` 建立管理员控制的命令入口；macOS 在 `/private/etc/paths.d/vmmm` 登记管理器目录，由系统登录 shell 加入 PATH，新终端生效。切换命令行/服务方式前会检查配置、程序和数据路径的归属及访问权限。默认卸载保留配置和数据库；删除它们需显式选项。
 
 Windows 如需注册、卸载或控制系统服务，请从“以管理员身份运行”的终端启动 `vmmm`；TUI 会在停止旧实例或提交新文件前检查 UAC 提权状态。仅使用命令行进程模式时可从普通终端运行。
 
@@ -68,6 +68,6 @@ Linux/macOS 选择服务账户后，管理器会在进程停止时调整所登�
 
 开发需要 Go 1.25：`go build -o vmmm.exe ./cmd/vmmm`、`go test ./...`。开发程序的 TUI 首装仍需要可用的正式签名 Release。正式流程从精确标签提交构建五平台单文件资产，为管理器和 VMM 分别使用独立 Ed25519 发布密钥。当前私钥只保存在各仓库 GitHub Actions Secrets；固定公钥与用途见 [发行公钥说明](docs/release-public-keys.md)。
 
-五平台 CI 另有显式启用的真实 PATH 验收：Windows 使用执行器当前用户注册表及环境广播，Linux/macOS 使用管理员拥有的 `/usr/local/bin/vmmm` 链接；均核对命令解析到刚构建的文件、执行版本命令并移除入口。测试完成后恢复原注册表或清理所拥有的链接。此验收只在明确启用的临时 GitHub 执行器运行，普通本地测试会跳过，不修改本机 PATH。
+五平台 CI 另有显式启用的真实 PATH 验收：Windows 使用执行器当前用户注册表及环境广播，Linux 使用管理员拥有的 `/usr/local/bin/vmmm` 链接，macOS 使用 `/private/etc/paths.d/vmmm` 并通过真实登录 shell 检查；均核对命令解析到刚构建的文件、执行版本命令并移除入口。Linux 执行器若将共享命令目录设为可写，先验证拒绝，再临时设定受控权限并恢复。测试完成后恢复原注册表或清理所拥有的入口。此验收只在明确启用的临时 GitHub 执行器运行，普通本地测试会跳过，不修改本机 PATH。
 
 下载源预置 GitHub 官方、`ghproxy.net`、`gh-proxy.org`、`ghfast.top`。代理只传输 GitHub Release URL，不成为发行身份；其可用性随地区和时间变化，TUI 会实时检测。样本与限制见 [下载源调研](docs/DOWNLOAD_SOURCES_CN.md)。完整设计和执行记录见 [安装器实施计划](docs/plan/20260923-01-VMMM_INSTALLER_IMPLEMENTATION.md)。

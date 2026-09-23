@@ -1110,6 +1110,12 @@ func (f *fakePath) Install(options pathctl.Options) (pathctl.Record, error) {
 		record.Path.Entries = []string{filepath.Clean(options.Directory)}
 		record.AfterSHA256 = strings.Repeat("a", 64)
 		record.AfterType = 1
+	} else if options.Method == pathctl.MethodDarwinPathsD {
+		record.Method = pathctl.MethodDarwinPathsD
+		record.Path.Scope = state.PATHScopeSystem
+		record.ProfilePath = pathctl.DarwinPathsFile
+		record.Path.Entries = []string{filepath.Clean(options.Directory)}
+		record.AfterSHA256 = strings.Repeat("a", 64)
 	} else {
 		record.Method = pathctl.MethodUnixLocalBin
 		record.LinkPath = filepath.Join(options.Directory, ".test-bin", "vmmm")
