@@ -129,6 +129,8 @@ func (m *Model) renderPage() []string {
 		return m.renderProviderTest()
 	case ScreenConfirm:
 		return m.renderConfirm()
+	case ScreenConfigPreview:
+		return m.renderConfigPreview()
 	case ScreenRunning:
 		return m.renderRunning()
 	case ScreenUninstall:
@@ -638,6 +640,9 @@ func (m *Model) renderConfirm() []string {
 		m.option(0, m.text(i18n.KeyActionConfirm, nil)),
 		m.option(1, m.text(i18n.KeyActionBack, nil)),
 	)
+	if m.configPreview != nil {
+		lines = append(lines, m.option(2, fmt.Sprintf(m.label("查看配置写入差异（%d 项）", "Review configuration writes (%d changes)"), len(m.configPreview.Changes))))
+	}
 	return lines
 }
 

@@ -20,6 +20,9 @@ import (
 // Model is the Bubble Tea state machine for first install and installed management.
 // Model 是首次安装与已安装管理使用的 Bubble Tea 状态机。
 type Model struct {
+	// configPreview belongs to the current validated plan and contains no secret values.
+	// configPreview 属于当前已校验计划，且不包含秘密值。
+	configPreview *ConfigPreview
 	// providerTest stores a diagnostic for the current candidate only, separately from static validation.
 	// providerTest 只保存当前候选配置的诊断，与静态校验分离。
 	providerTest *ProviderTestSummary
@@ -545,6 +548,8 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 		m.setScreen(ScreenPath)
 	case ScreenConfirm:
 		m.setScreen(ScreenConfigCheck)
+	case ScreenConfigPreview:
+		m.setScreen(ScreenConfirm)
 	case ScreenProviderTest:
 		m.setScreen(ScreenConfigCheck)
 	case ScreenRunning, ScreenDone, ScreenError:
@@ -801,6 +806,10 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 			m.setScreen(ScreenConfirm)
 		}
 	case ScreenConfirm:
+		if m.cursor == 2 && m.configPreview != nil {
+			m.setScreen(ScreenConfigPreview)
+			return m, nil
+		}
 		if m.cursor == 0 {
 			if !m.validation.Valid {
 				m.setScreen(ScreenConfigCheck)
@@ -810,6 +819,10 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 			return m, m.beginOperation(OperationRequest{Kind: OperationInstall, Plan: m.plan})
 		}
 		m.setScreen(ScreenConfigCheck)
+	case ScreenConfigPreview:
+		if m.cursor == 0 {
+			m.setScreen(ScreenConfirm)
+		}
 	case ScreenProviderTest:
 		if m.cursor == 0 {
 			m.setScreen(ScreenConfigCheck)
@@ -1685,6 +1698,9 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 	if message.event.Snapshot != nil {
 		m.snapshot = *message.event.Snapshot
 	}
+	if message.event.Preview != nil {
+		m.configPreview = &ConfigPreview{Changes: append([]ConfigChange(nil), message.event.Preview.Changes...)}
+	}
 	if message.event.ProviderTest != nil {
 		result := *message.event.ProviderTest
 		m.providerTest = &result
@@ -1907,7 +1923,12 @@ func (m *Model) itemCount() int {
 	case ScreenProviderTest:
 		return 4
 	case ScreenConfirm:
+		if m.configPreview != nil {
+			return 3
+		}
 		return 2
+	case ScreenConfigPreview:
+		return len(m.previewRows())
 	case ScreenRunning:
 		return 5
 	case ScreenUninstall:
@@ -1949,6 +1970,7 @@ func (m *Model) setScreen(screen Screen) {
 func (m *Model) invalidateValidation() {
 	m.validation = ValidationSummary{}
 	m.providerTest = nil
+	m.configPreview = nil
 }
 
 // sourceAt returns a safe source selection for a possibly stale cursor.

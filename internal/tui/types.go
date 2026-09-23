@@ -85,6 +85,9 @@ const (
 	// ScreenConfirm asks for final execution confirmation.
 	// ScreenConfirm 询问最终执行确认。
 	ScreenConfirm
+	// ScreenConfigPreview displays the redacted candidate writes before final confirmation.
+	// ScreenConfigPreview 在最终确认前展示脱敏的候选写入。
+	ScreenConfigPreview
 	// ScreenRunning displays the running or service-managed instance state.
 	// ScreenRunning 展示前台或服务管理实例的运行状态。
 	ScreenRunning
@@ -793,6 +796,9 @@ type OperationRequest struct {
 // OperationEvent is emitted by Controller.Start and is safe for direct TUI rendering.
 // OperationEvent 由 Controller.Start 发出，可直接安全渲染到 TUI。
 type OperationEvent struct {
+	// Preview contains only display-safe changes for the successfully validated candidate.
+	// Preview 仅包含已成功校验候选配置的安全展示变化。
+	Preview *ConfigPreview
 	// ProviderTest is separate from static configuration validation and contains only fixed result codes.
 	// ProviderTest 独立于静态配置校验，仅包含固定结果码。
 	ProviderTest *ProviderTestSummary

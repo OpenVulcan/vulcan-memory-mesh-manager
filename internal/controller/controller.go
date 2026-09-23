@@ -1298,8 +1298,15 @@ func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events 
 	if err != nil {
 		return errors.New("VMM configuration validation could not be completed")
 	}
+	var preview *tui.ConfigPreview
+	if validation.Valid {
+		preview, err = c.configurationPreview(ctx, binaryPath, plan, configFiles)
+		if err != nil {
+			return err
+		}
+	}
 	summary := validationSummary(validation)
-	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Validation: &summary, Progress: tui.Progress{Stage: "validate-config", Message: summary.Summary}})
+	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Validation: &summary, Preview: preview, Progress: tui.Progress{Stage: "validate-config", Message: summary.Summary}})
 	if !validation.Valid {
 		return errors.New("VMM configuration is invalid")
 	}
