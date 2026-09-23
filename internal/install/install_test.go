@@ -109,6 +109,16 @@ func TestInstallRejectsControlStateInDataRoot(t *testing.T) {
 	}
 }
 
+// TestLoadOptionalStateUsesMissingErrorIdentity verifies a missing parent is classified through the wrapped OS error.
+// TestLoadOptionalStateUsesMissingErrorIdentity 验证父目录缺失通过包装后的系统错误身份识别。
+func TestLoadOptionalStateUsesMissingErrorIdentity(t *testing.T) {
+	path := filepath.Join(testpath.CanonicalTempDir(t), "missing-parent", RegistrationFileName)
+	_, registered, err := loadOptionalState(path)
+	if err != nil || registered {
+		t.Fatalf("missing-parent registration = %t, %v", registered, err)
+	}
+}
+
 // TestInstallRejectsInvalidConfigBeforeProgramPromotion verifies fail-closed config validation.
 // TestInstallRejectsInvalidConfigBeforeProgramPromotion 验证配置失败时不会推广程序文件。
 func TestInstallRejectsInvalidConfigBeforeProgramPromotion(t *testing.T) {

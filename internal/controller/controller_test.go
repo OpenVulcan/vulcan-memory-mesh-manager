@@ -941,6 +941,29 @@ func TestUninstallPreservedProgramKeepsConfigurationAndData(t *testing.T) {
 	}
 }
 
+// TestUninstallRemovesSelectedRootsUnderSeparateControlState verifies complete root cleanup leaves no installation registration.
+// TestUninstallRemovesSelectedRootsUnderSeparateControlState 验证明确选择的配置和数据根完整清理后不会留下安装登记。
+func TestUninstallRemovesSelectedRootsUnderSeparateControlState(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatalf("fixture install failed at %s", kind)
+		}
+	}
+	if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationUninstall, Uninstall: tui.UninstallOptions{KeepConfig: false, KeepData: false}})) != tui.OperationEventCompleted {
+		t.Fatal("selected root cleanup did not complete")
+	}
+	for _, path := range []string{plan.ConfigRoot, plan.DataRoot, controller.options.StatePath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("completed uninstall retained %q: %v", path, err)
+		}
+	}
+	snapshot, err := controller.Snapshot(context.Background())
+	if err != nil || snapshot.Installed || snapshot.Incomplete {
+		t.Fatalf("completed uninstall reported an installation: %+v %v", snapshot, err)
+	}
+}
+
 // TestServiceUserOwnershipGate verifies that Unix service registration checks real root ownership.
 // TestServiceUserOwnershipGate 验证 Unix 服务注册会检查真实的根目录归属。
 func TestServiceUserOwnershipGate(t *testing.T) {

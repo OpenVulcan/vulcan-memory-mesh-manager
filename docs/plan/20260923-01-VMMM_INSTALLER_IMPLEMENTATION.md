@@ -368,3 +368,10 @@ VMM 提交 `efd6027` 对应的原生持续集成已在五个平台全部通过�
 2. 文件变更：修改 `cmd/vmmm/main.go`、`cmd/vmmm/main_test.go`、`internal/install/install.go`、`internal/install/install_test.go`、`internal/install/data_root_windows_test.go`、`internal/install/ownership_unix.go`、`internal/controller/controller.go`、`internal/controller/controller_test.go`、`README.md` 与本计划；无新增或删除文件。
 3. 关键逻辑：程序文件全部移除后先把无受管文件的未完成登记持久化并清理程序备份，再调用同锁内的 `AfterFiles` 清理明确选择的配置和数据根；全部成功才删除登记。目录清理中途失败仍可用残留登记明确重试，修改过的程序文件则保持配置和数据不动。PATH 侧车收据不再在解锁后重复删除，避免误删另一实例刚登记的收据。Windows 暂存只建立独立受保护的控制根，不提前创建 VMM 数据根。
 4. 验证与边界：使用真实 VMM 标准布局的本机 Go 1.25.0 全量四百零二项测试、`go vet ./...`、二十一项发行脚本测试及差异检查通过；新增清理失败后重试与清理期间锁竞争回归。管理器 `cf24214` 的推送运行 `35896909386` 和拉取请求运行 `35896913477` 均在五个平台通过。本次控制根调整的五平台原生持续集成仍待提交后复验；Certum 正式发行门禁保持。
+
+### 登记缺失判定复审
+
+1. 核心调整：安装库仍使用 Windows 错误文本片段判断安装登记缺失，无法保证只有真正的文件不存在才按首次安装处理。已改为仅检查 `errors.Is(err, os.ErrNotExist)`，与控制器和命令行现有契约一致；连续无问题审核计数保持零。
+2. 文件变更：修改 `internal/install/install.go`、`internal/install/install_test.go`、`internal/controller/controller_test.go` 与本计划；无新增或删除文件。
+3. 关键逻辑：`state.Load` 使用 `%w` 保留原始系统错误，安装库无需解析操作系统语言化文本；新增缺失父目录的真实错误身份验证。另增加完整卸载所选配置与数据根的控制器集成测试，确认控制状态独立、目录和登记都被删除，快照报告未安装；六项卸载相关测试在竞态检测模式下通过。
+4. 验证与边界：使用真实 VMM 标准布局的本机 Go 1.25.0 全量四百零四项测试、`go vet ./...` 与差异检查通过。管理器 `424e8aa` 的推送运行 `35898089393` 和拉取请求运行 `35898096059` 均在五个平台通过；本次修复待提交后原生复验。Certum 正式发行门禁保持。

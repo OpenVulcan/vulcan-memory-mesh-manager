@@ -1562,7 +1562,7 @@ func validateLifecycleState(request Request, old state.State, registered bool) e
 // loadOptionalState 将缺失登记与损坏登记明确区分。
 func loadOptionalState(path string) (state.State, bool, error) {
 	loaded, err := state.Load(path)
-	if errors.Is(err, os.ErrNotExist) || (err != nil && strings.Contains(err.Error(), "open state file: open ") && strings.Contains(err.Error(), "cannot find the path")) {
+	if errors.Is(err, os.ErrNotExist) {
 		return state.State{}, false, nil
 	}
 	if err != nil {
