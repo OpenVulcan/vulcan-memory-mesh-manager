@@ -5,11 +5,11 @@
 package processctl
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -47,35 +47,47 @@ func inspectProcess(pid int) (processSnapshot, error) {
 	}, nil
 }
 
-// darwinArguments parses KERN_PROCARGS2 and keeps exactly argc plus executable.
-// darwinArguments 解析 KERN_PROCARGS2，并只保留 argc 加可执行文件。
+// darwinArguments reads the kernel argv vector from KERN_PROCARGS2.
+// darwinArguments 从 KERN_PROCARGS2 读取内核 argv 向量。
 func darwinArguments(pid int) ([]string, error) {
 	data, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil || len(data) < 4 {
+	if err != nil {
+		return nil, errors.New("Darwin process arguments are unavailable")
+	}
+	return parseDarwinArguments(data)
+}
+
+// parseDarwinArguments skips the separate executable path and alignment padding before reading argc arguments.
+// parseDarwinArguments 跳过独立的可执行文件路径及对齐填充，再读取 argc 个参数。
+func parseDarwinArguments(data []byte) ([]string, error) {
+	if len(data) < 4 {
 		return nil, errors.New("Darwin process arguments are unavailable")
 	}
 	argc := int(int32(binary.LittleEndian.Uint32(data[:4])))
-	if argc < 0 || argc > 256 {
+	if argc < 1 || argc > 256 {
 		return nil, errors.New("Darwin process argument count is invalid")
 	}
 	rest := data[4:]
+	// The kernel stores the executable path before argv and pads it with NUL bytes.
+	// 内核先存储可执行文件路径，再用 NUL 字节填充，随后才是 argv。
+	executableEnd := bytes.IndexByte(rest, 0)
+	if executableEnd <= 0 {
+		return nil, errors.New("Darwin executable path is missing")
+	}
+	rest = rest[executableEnd+1:]
 	for len(rest) > 0 && rest[0] == 0 {
 		rest = rest[1:]
 	}
-	parts := make([]string, 0, argc+1)
-	for len(parts) < argc+1 {
-		index := strings.IndexByte(string(rest), 0)
+	parts := make([]string, 0, argc)
+	for len(parts) < argc {
+		index := bytes.IndexByte(rest, 0)
 		if index < 0 {
-			if len(rest) == 0 {
-				return nil, errors.New("Darwin process arguments are truncated")
-			}
-			parts = append(parts, string(rest))
-			break
+			return nil, errors.New("Darwin process arguments are truncated")
 		}
 		parts = append(parts, string(rest[:index]))
 		rest = rest[index+1:]
 	}
-	if len(parts) != argc+1 || parts[0] == "" {
+	if parts[0] == "" {
 		return nil, errors.New("Darwin process arguments are malformed")
 	}
 	return parts, nil

@@ -16,7 +16,11 @@ import (
 // TestMain 在收到请求时把测试二进制变成长驻 fake VMM 子进程。
 func TestMain(main *testing.M) {
 	if os.Getenv("VMMM_PROCESSCTL_HELPER") == "1" {
-		select {}
+		// A sleeping helper remains alive without Go's deadlock detector terminating an empty select.
+		// 睡眠中的辅助进程持续存活，不会因空 select 触发 Go 死锁检测而退出。
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 	os.Exit(main.Run())
 }

@@ -355,11 +355,12 @@ func TestPreparedPackageHoldsInstallLockUntilClose(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := acquireInstallLock(ctx, filepath.Join(request.Paths.DataRoot, InstallLockFileName)); !errors.Is(err, context.DeadlineExceeded) {
+	lockPath := filepath.Join(filepath.Dir(request.StatePath), InstallLockFileName)
+	if _, err := acquireInstallLock(ctx, lockPath); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("concurrent lock acquire error = %v, want context deadline", err)
 	}
 	prepared.Close()
-	lock, err := acquireInstallLock(context.Background(), filepath.Join(request.Paths.DataRoot, InstallLockFileName))
+	lock, err := acquireInstallLock(context.Background(), lockPath)
 	if err != nil {
 		t.Fatalf("lock acquire after prepared close: %v", err)
 	}
