@@ -272,6 +272,9 @@ type Options struct {
 	// WaitHealthy checks runtime readiness after start; tests may supply a deterministic probe.
 	// WaitHealthy 在启动后检查运行时就绪状态；测试可提供确定性探测。
 	WaitHealthy func(context.Context, string, string) error
+	// Health reads one local VMM probe for installed diagnostics; tests may supply a deterministic result.
+	// Health 为已安装诊断读取一次本地 VMM 探测；测试可提供确定性结果。
+	Health func(context.Context, string, string) (configbridge.HealthResult, error)
 	// Clock supplies timestamps for deterministic status tests.
 	// Clock 提供确定性状态测试所需的时间。
 	Clock func() time.Time
@@ -480,6 +483,15 @@ func New(options Options) (*Controller, error) {
 			return client.WaitHealthy(ctx)
 		}
 	}
+	if options.Health == nil {
+		options.Health = func(ctx context.Context, binaryPath, configRoot string) (configbridge.HealthResult, error) {
+			client, err := configbridge.New(binaryPath, configRoot)
+			if err != nil {
+				return configbridge.HealthResult{}, err
+			}
+			return client.Health(ctx)
+		}
+	}
 	if options.Effective == nil {
 		options.Effective = func(ctx context.Context, binary, root string) (configbridge.EffectiveConfig, error) {
 			client, err := configbridge.New(binary, root)
@@ -668,6 +680,9 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 	case tui.OperationValidateSaved:
 		c.discardStaged()
 		err = c.validateSaved(ctx, events)
+	case tui.OperationDoctor:
+		c.discardStaged()
+		err = c.diagnoseSaved(ctx, events)
 	case tui.OperationEffective:
 		if request.Plan.Version.Tag != "" {
 			err = c.validate(ctx, request.Plan, events, true)

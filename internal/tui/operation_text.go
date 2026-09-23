@@ -8,7 +8,9 @@ package tui
 // 运行时诊断与配置值由 VMM 或用户拥有，保持原文以避免改变其含义。
 var operationChinese = map[string]string{
 	"validate-saved": "检查已保存配置",
+	"doctor":         "诊断配置与运行状态",
 	"configuration check time could not be saved": "无法保存配置检查时间",
+	"VMM health probe could not be completed":     "无法完成 VMM 健康探测",
 	"effective": "查看生效配置",
 	"VMM effective configuration could not be loaded": "无法加载 VMM 生效配置",
 	"VMM effective configuration is invalid":          "VMM 生效配置结果无效",

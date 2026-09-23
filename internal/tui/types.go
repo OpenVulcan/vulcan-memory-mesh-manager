@@ -94,6 +94,9 @@ const (
 	// ScreenSavedCheck reports a check of saved configuration without entering the installation wizard.
 	// ScreenSavedCheck 显示已保存配置的检查结果，不进入安装向导。
 	ScreenSavedCheck
+	// ScreenDoctor separates runtime readiness from saved-configuration validation.
+	// ScreenDoctor 将运行时就绪状态与已保存配置校验分别展示。
+	ScreenDoctor
 	// ScreenRunning displays the running or service-managed instance state.
 	// ScreenRunning 展示前台或服务管理实例的运行状态。
 	ScreenRunning
@@ -234,6 +237,9 @@ const (
 	// OperationValidateSaved checks the installed configuration and records a successful check time.
 	// OperationValidateSaved 检查已安装配置，并记录检查通过时间。
 	OperationValidateSaved OperationKind = "validate-saved"
+	// OperationDoctor checks installed configuration and local runtime health without provider calls.
+	// OperationDoctor 检查已安装配置和本地运行时健康状态，不调用供应商。
+	OperationDoctor OperationKind = "doctor"
 	// OperationEffective reads saved or validated candidate effective configuration.
 	// OperationEffective 读取已保存或已校验候选配置的最终生效值。
 	OperationEffective OperationKind = "effective"
@@ -561,6 +567,23 @@ type ValidationSummary struct {
 	Errors []string
 }
 
+// HealthSummary carries only VMM's validated local health status and fixed diagnostic codes.
+// HealthSummary 仅携带 VMM 已校验的本地健康状态和固定诊断码。
+type HealthSummary struct {
+	// Status is the runtime's ok or error status.
+	// Status 是运行时返回的成功或错误状态。
+	Status string
+	// Class separates ready, unreachable, configuration and storage failures.
+	// Class 区分就绪、不可达、配置和存储故障。
+	Class string
+	// Error is a bounded diagnostic code, never raw runtime output.
+	// Error 是有限集合中的诊断码，而非原始运行时输出。
+	Error string
+	// ElapsedMsec is the local probe duration.
+	// ElapsedMsec 是本地探测耗时。
+	ElapsedMsec int64
+}
+
 // ConfigField describes one optional advanced configuration field.
 // ConfigField 描述一个可选的高级配置字段。
 type ConfigField struct {
@@ -820,6 +843,9 @@ type OperationEvent struct {
 	// ProviderTest is separate from static configuration validation and contains only fixed result codes.
 	// ProviderTest 独立于静态配置校验，仅包含固定结果码。
 	ProviderTest *ProviderTestSummary
+	// Health contains the validated local runtime probe, independent of static configuration validity.
+	// Health 包含经过验证的本地运行时探测结果，与静态配置有效性分开。
+	Health *HealthSummary
 	// Kind identifies progress, completion, failure, or cancellation.
 	// Kind 标识进度、完成、失败或取消。
 	Kind OperationEventKind

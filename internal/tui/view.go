@@ -96,6 +96,8 @@ func (m *Model) renderPage() []string {
 		return m.renderEffective()
 	case ScreenSavedCheck:
 		return m.renderSavedCheck()
+	case ScreenDoctor:
+		return m.renderDoctor()
 	case ScreenSource:
 		return m.renderSource()
 	case ScreenCustomSource:
@@ -218,6 +220,7 @@ func (m *Model) renderHome() []string {
 		m.label("升级到新版本", "Upgrade to a new release"),
 		m.label("设置 PATH 命令入口", "Configure PATH command entry"),
 		m.label("检查已保存配置", "Check saved configuration"),
+		m.label("诊断配置与运行状态", "Diagnose configuration and runtime"),
 	} {
 		lines = append(lines, m.option(index, item))
 	}

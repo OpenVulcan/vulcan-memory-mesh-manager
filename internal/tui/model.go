@@ -23,6 +23,9 @@ type Model struct {
 	// savedValidation is independent of candidate validation so an installed check never authorizes pending writes.
 	// savedValidation 独立于候选校验，已安装配置检查不能授权尚待提交的修改。
 	savedValidation *ValidationSummary
+	// health is a local runtime diagnostic kept separate from static configuration results.
+	// health 是独立于静态配置结果的本地运行时诊断。
+	health *HealthSummary
 	// editingInstalledPATH keeps the installed PATH settings page out of the installation wizard.
 	// editingInstalledPATH 将已安装 PATH 设置页面与安装向导分开路由。
 	editingInstalledPATH bool
@@ -570,7 +573,7 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 		m.setScreen(ScreenConfirm)
 	case ScreenEffective:
 		m.setScreen(m.operationScreen)
-	case ScreenSavedCheck:
+	case ScreenSavedCheck, ScreenDoctor:
 		m.setScreen(ScreenHome)
 	case ScreenProviderTest:
 		m.setScreen(ScreenConfigCheck)
@@ -856,7 +859,7 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 		if m.cursor == 0 {
 			m.setScreen(m.operationScreen)
 		}
-	case ScreenSavedCheck:
+	case ScreenSavedCheck, ScreenDoctor:
 		if m.cursor == 0 {
 			m.setScreen(ScreenHome)
 		}
@@ -1605,6 +1608,8 @@ func (m *Model) activateHomeSelection() (tea.Model, tea.Cmd) {
 		}
 	case 15:
 		return m, m.beginOperation(OperationRequest{Kind: OperationValidateSaved})
+	case 16:
+		return m, m.beginOperation(OperationRequest{Kind: OperationDoctor})
 	}
 	return m, nil
 }
@@ -1650,8 +1655,11 @@ func (m *Model) activateUninstallSelection() (tea.Model, tea.Cmd) {
 // beginOperation starts a controller stream in a Bubble Tea command closure.
 // beginOperation 在 Bubble Tea 命令闭包中启动 Controller 事件流。
 func (m *Model) beginOperation(request OperationRequest) tea.Cmd {
-	if request.Kind == OperationValidateSaved {
+	if request.Kind == OperationValidateSaved || request.Kind == OperationDoctor {
 		m.savedValidation = nil
+	}
+	if request.Kind == OperationDoctor {
+		m.health = nil
 	}
 	if request.Kind == OperationEffective {
 		m.effective = nil
@@ -1768,6 +1776,10 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 		result := *message.event.ProviderTest
 		m.providerTest = &result
 	}
+	if message.event.Health != nil {
+		health := *message.event.Health
+		m.health = &health
+	}
 	if message.event.Package != nil {
 		m.plan.Package = *message.event.Package
 		m.plan.Package.StorageModes = append([]StorageMode(nil), message.event.Package.StorageModes...)
@@ -1790,7 +1802,7 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 	if message.event.Validation != nil {
 		validation := *message.event.Validation
 		validation.Errors = append([]string(nil), validation.Errors...)
-		if m.operationKind == OperationValidateSaved {
+		if m.operationKind == OperationValidateSaved || m.operationKind == OperationDoctor {
 			m.savedValidation = &validation
 		} else {
 			m.validation = validation
@@ -1917,6 +1929,13 @@ func (m *Model) routeCompletedOperation() {
 			return
 		}
 		m.setScreen(ScreenSavedCheck)
+	case OperationDoctor:
+		if m.savedValidation == nil || m.health == nil {
+			m.errorMessage = m.label("运行时未返回完整诊断结果", "Runtime did not return a complete diagnostic result")
+			m.setScreen(ScreenError)
+			return
+		}
+		m.setScreen(ScreenDoctor)
 	case OperationTestProvider:
 		m.setScreen(ScreenConfigCheck)
 	case OperationInstall:
@@ -1977,7 +1996,7 @@ func (m *Model) itemCount() int {
 	case ScreenLanguage:
 		return 2
 	case ScreenHome:
-		return 16
+		return 17
 	case ScreenSource:
 		return len(m.sources) + 1
 	case ScreenVersion:
@@ -2018,6 +2037,8 @@ func (m *Model) itemCount() int {
 		return len(m.effectiveRows())
 	case ScreenSavedCheck:
 		return len(m.savedCheckRows())
+	case ScreenDoctor:
+		return len(m.doctorRows())
 	case ScreenRunning:
 		return 5
 	case ScreenUninstall:

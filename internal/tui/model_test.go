@@ -64,6 +64,8 @@ func (c *testController) Start(_ context.Context, request OperationRequest) (<-c
 			valid = *c.savedValidationValid
 		}
 		stream <- OperationEvent{Kind: OperationEventCompleted, Validation: &ValidationSummary{Valid: valid, Errors: []string{"saved configuration needs attention"}}, Snapshot: &InstallationSnapshot{Installed: true, LastValidation: "2026-09-24T06:07:08Z"}}
+	case OperationDoctor:
+		stream <- OperationEvent{Kind: OperationEventCompleted, Validation: &ValidationSummary{Valid: true}, Health: &HealthSummary{Status: "error", Class: "unreachable", Error: "grpc_unreachable", ElapsedMsec: 5}, Snapshot: &InstallationSnapshot{Installed: true, LastValidation: "2026-09-24T06:07:08Z"}}
 	case OperationInstall:
 		stream <- OperationEvent{Kind: OperationEventCompleted, Snapshot: &InstallationSnapshot{Installed: true, VMMVersion: "v0.1.0", Storage: request.Plan.Storage.Mode, ServiceMode: request.Plan.ServiceMode}}
 	case OperationEffective:
@@ -250,6 +252,30 @@ func TestInstalledHomeCheckPathAndUpgrade(t *testing.T) {
 	model = update(t, model, press(tea.KeyEnter, ""))
 	if model.Screen() != ScreenSource || model.plan.Version.Tag != "" || model.plan.Rollback || model.plan.Repair {
 		t.Fatalf("upgrade entry retained old selection: screen=%v plan=%+v", model.Screen(), model.plan)
+	}
+}
+
+// TestInstalledDoctorShowsHealthSeparately checks the direct TUI action keeps candidate approval independent of runtime readiness.
+// TestInstalledDoctorShowsHealthSeparately 检查 TUI 直接诊断入口不把候选审批与运行时健康混为一谈。
+func TestInstalledDoctorShowsHealthSeparately(t *testing.T) {
+	controller := &testController{}
+	model := NewModel(ModelConfig{Controller: controller, Localizer: testLocalizer{}, Language: LanguageChinese, Initial: InstallationSnapshot{Installed: true}})
+	model.validation = ValidationSummary{Valid: false, Summary: "candidate invalid"}
+	model.cursor = 16
+	model = update(t, model, press(tea.KeyEnter, ""))
+	if model.Screen() != ScreenDoctor || model.savedValidation == nil || !model.savedValidation.Valid || model.health == nil || model.health.Class != "unreachable" || model.validation.Valid {
+		t.Fatalf("doctor mixed static and runtime state: screen=%v candidate=%+v saved=%+v health=%+v", model.Screen(), model.validation, model.savedValidation, model.health)
+	}
+	if len(controller.requests) != 1 || controller.requests[0].Kind != OperationDoctor {
+		t.Fatalf("doctor request = %+v", controller.requests)
+	}
+	view := model.View().Content
+	if !strings.Contains(view, "不可达") || !strings.Contains(view, "grpc_unreachable") {
+		t.Fatalf("doctor lost local health result: %s", view)
+	}
+	model = update(t, model, press(tea.KeyEscape, ""))
+	if model.Screen() != ScreenHome {
+		t.Fatalf("doctor Escape returned to %v", model.Screen())
 	}
 }
 

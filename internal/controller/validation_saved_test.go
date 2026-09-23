@@ -86,3 +86,39 @@ func TestValidateInstalledRejectsIncompleteRegistration(t *testing.T) {
 		t.Fatalf("incomplete registration changed: %+v, error=%v", unchanged, err)
 	}
 }
+
+// TestDoctorSeparatesStaticValidityAndLocalHealth verifies one installed diagnostic does not call a provider or claim readiness from valid YAML.
+// TestDoctorSeparatesStaticValidityAndLocalHealth 验证已安装诊断区分静态有效性与本地健康，不因配置通过就宣称实例就绪。
+func TestDoctorSeparatesStaticValidityAndLocalHealth(t *testing.T) {
+	controller, plan, fixture := newFixtureController(t)
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationInstall} {
+		if terminalKind(collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})) != tui.OperationEventCompleted {
+			t.Fatal("fixture installation failed")
+		}
+	}
+	called := 0
+	controller.options.Health = func(_ context.Context, binaryPath, configRoot string) (configbridge.HealthResult, error) {
+		called++
+		wantBinary := filepath.Join(plan.ProgramRoot, filepath.FromSlash(fixture.identity.VMMExecutablePath))
+		if binaryPath != wantBinary || configRoot != plan.ConfigRoot {
+			t.Fatalf("diagnostic used unregistered paths: binary=%q root=%q", binaryPath, configRoot)
+		}
+		return configbridge.HealthResult{Status: "error", Class: "unreachable", Error: "grpc_unreachable", ElapsedMsec: 5}, nil
+	}
+	events := collectOperation(t, controller, tui.OperationRequest{Kind: tui.OperationDoctor})
+	if terminalKind(events) != tui.OperationEventCompleted || called != 1 {
+		t.Fatalf("diagnostic terminal=%v, health calls=%d", terminalKind(events), called)
+	}
+	found := false
+	for _, event := range events {
+		if event.Validation != nil && event.Health != nil && event.Snapshot != nil {
+			if !event.Validation.Valid || event.Health.Class != "unreachable" || !event.Snapshot.Installed || event.Snapshot.LastValidation == "" {
+				t.Fatalf("diagnostic falsely combined validity and health: %+v", event)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("diagnostic did not emit separated results")
+	}
+}

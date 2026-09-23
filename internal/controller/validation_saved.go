@@ -29,6 +29,12 @@ func (c *Controller) ValidateInstalled(ctx context.Context) (configbridge.Valida
 	if err != nil {
 		return configbridge.ValidationResult{}, err
 	}
+	return c.validateInstalledLocked(ctx, installed)
+}
+
+// validateInstalledLocked checks the registered files and calls VMM while the caller holds the installation lock.
+// validateInstalledLocked 在调用方持有安装锁时检查登记文件并调用 VMM，返回权威结果或安全错误。
+func (c *Controller) validateInstalledLocked(ctx context.Context, installed state.State) (configbridge.ValidationResult, error) {
 	if !installed.InstallationComplete {
 		return configbridge.ValidationResult{}, errors.New("VMM installation is incomplete")
 	}
@@ -50,6 +56,37 @@ func (c *Controller) ValidateInstalled(ctx context.Context) (configbridge.Valida
 		}
 	}
 	return result, nil
+}
+
+// diagnoseSaved holds one installation lock across configuration validation, local health, and the refreshed snapshot.
+// diagnoseSaved 在配置校验、本地健康探测与快照刷新期间持有同一安装锁，防止另一管理器替换程序。
+func (c *Controller) diagnoseSaved(ctx context.Context, events chan<- tui.OperationEvent) error {
+	releaseLock, err := install.LockInstallation(ctx, c.options.StatePath)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+	installed, err := c.requireState()
+	if err != nil {
+		return err
+	}
+	validation, err := c.validateInstalledLocked(ctx, installed)
+	if err != nil {
+		return err
+	}
+	binary := filepath.Join(installed.Paths.ProgramRoot, filepath.FromSlash(c.identity.VMMExecutablePath))
+	health, err := c.options.Health(ctx, binary, installed.Paths.ConfigRoot)
+	if err != nil {
+		return errors.New("VMM health probe could not be completed")
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	summary := validationSummary(validation)
+	healthSummary := tui.HealthSummary{Status: health.Status, Class: health.Class, Error: health.Error, ElapsedMsec: health.ElapsedMsec}
+	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Validation: &summary, Health: &healthSummary, Snapshot: &snapshot})
+	return nil
 }
 
 // validateSaved emits a dedicated result and refreshed snapshot; invalid configuration is a completed check, not an installation failure.
