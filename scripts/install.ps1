@@ -33,6 +33,9 @@ $script:VMMMSHA256 = @{
     'macos-intel' = '__VMMM_SHA256_MACOS_INTEL__'
     'macos-arm64' = '__VMMM_SHA256_MACOS_ARM64__'
 }
+# MaxManagerBytes bounds untrusted proxy responses before their release digest is checked.
+# MaxManagerBytes 在发行摘要校验前限制不可信代理响应大小。
+$script:MaxManagerBytes = [long]536870912
 
 function Stop-Bootstrap {
     <#
@@ -123,7 +126,7 @@ function Get-SourcePrefix {
     #>
     param(
         [Parameter(Mandatory = $true)][string] $SelectedSource,
-        [Parameter(Mandatory = $true)][string] $SelectedPrefix
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $SelectedPrefix
     )
     switch -CaseSensitive ($SelectedSource) {
         'official' {
@@ -172,18 +175,23 @@ function Download-SecureFile {
         [Parameter(Mandatory = $true)][string] $Destination
     )
     $client = $null
+    $downloadTimeout = $null
     try {
         Add-Type -AssemblyName System.Net.Http
         $handler = New-Object System.Net.Http.HttpClientHandler
         $handler.AllowAutoRedirect = $false
         $client = New-Object System.Net.Http.HttpClient -ArgumentList $handler
         $client.Timeout = [TimeSpan]::FromMinutes(10)
+        # ResponseHeadersRead stops the HttpClient timeout at headers, so one token covers redirects and body reads.
+        # ResponseHeadersRead 使 HttpClient 超时在响应头结束，故用同一个令牌覆盖重定向与正文读取。
+        $downloadTimeout = [System.Threading.CancellationTokenSource]::new()
+        $downloadTimeout.CancelAfter([TimeSpan]::FromMinutes(10))
         $current = New-Object System.Uri -ArgumentList $Url
         for ($redirect = 0; $redirect -lt 5; $redirect++) {
             if ($current.Scheme -ne 'https') {
                 Stop-Bootstrap 'download redirect was not HTTPS / 下载重定向不是 HTTPS'
             }
-            $response = $client.GetAsync($current, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            $response = $client.GetAsync($current, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $downloadTimeout.Token).GetAwaiter().GetResult()
             try {
                 $statusCode = [int]$response.StatusCode
                 if ($statusCode -ge 300 -and $statusCode -lt 400) {
@@ -200,6 +208,10 @@ function Download-SecureFile {
                 if ($statusCode -lt 200 -or $statusCode -ge 300) {
                     Stop-Bootstrap "manager download returned HTTP $statusCode / 管理器下载返回 HTTP $statusCode"
                 }
+                $contentLength = $response.Content.Headers.ContentLength
+                if ($null -ne $contentLength -and $contentLength -gt $script:MaxManagerBytes) {
+                    Stop-Bootstrap 'manager download exceeds the size limit / 管理器下载超过大小上限'
+                }
                 $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
                 try {
                     $outputStream = New-Object System.IO.FileStream -ArgumentList @(
@@ -208,13 +220,26 @@ function Download-SecureFile {
                         [System.IO.FileAccess]::Write,
                         [System.IO.FileShare]::None
                     )
-                    try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose() }
+                    try {
+                        # Count actual streamed bytes because a proxy may omit or misstate Content-Length.
+                        # 逐块统计实际字节，防止代理省略或伪造 Content-Length。
+                        $buffer = [byte[]]::new(65536)
+                        $received = [long]0
+                        while (($count = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $downloadTimeout.Token).GetAwaiter().GetResult()) -gt 0) {
+                            if ($count -gt ($script:MaxManagerBytes - $received)) {
+                                Stop-Bootstrap 'manager download exceeds the size limit / 管理器下载超过大小上限'
+                            }
+                            $outputStream.Write($buffer, 0, $count)
+                            $received += $count
+                        }
+                    } finally { $outputStream.Dispose() }
                 } finally { $inputStream.Dispose() }
                 return
             } finally { $response.Dispose() }
         }
         Stop-Bootstrap 'too many HTTPS redirects / HTTPS 重定向次数过多'
     } finally {
+        if ($null -ne $downloadTimeout) { $downloadTimeout.Dispose() }
         if ($null -ne $client) { $client.Dispose() }
     }
 }

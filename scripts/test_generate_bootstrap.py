@@ -8,6 +8,7 @@ import importlib.util
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 
@@ -87,10 +88,24 @@ class BootstrapGeneratorTests(unittest.TestCase):
             )
             self.assertTrue(ps1.is_file())
             self.assertTrue(sh.is_file())
+            self.assertTrue(ps1.read_bytes().startswith(b"\xef\xbb\xbf"))
             self.assertIn("vmmm-v0.2.0-linux-x64", sh.read_text(encoding="utf-8"))
             self.assertNotIn("__VMMM_", ps1.read_text(encoding="utf-8"))
             if os.name != 'nt':
                 self.assertTrue(sh.stat().st_mode & stat.S_IXUSR)
+            else:
+                # A deliberately unsupported source proves PowerShell 5.1 parsed the whole rendered script without downloading.
+                # 故意使用不支持的来源，以证明 PowerShell 5.1 已解析整个发行脚本且未进入下载。
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-File", str(ps1), "-Source", "unavailable-test-source"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsupported source", result.stdout + result.stderr)
             self.assertIn("__VMMM_", (SCRIPT_DIR / "install.sh").read_text(encoding="utf-8"))
 
     def test_generation_cannot_overwrite_template_directory(self) -> None:
@@ -141,6 +156,22 @@ class BootstrapGeneratorTests(unittest.TestCase):
             powershell,
         )
         self.assertNotIn("Remove-Item -LiteralPath $tempDirectory -Recurse", powershell)
+
+    def test_bootstrap_downloads_have_a_hard_size_limit(self) -> None:
+        """Both bootstrap templates reject oversized proxy responses before executing the manager.
+        两种引导模板都在执行管理器前拒绝过大的代理响应。
+        """
+        shell = (SCRIPT_DIR / "install.sh").read_text(encoding="utf-8")
+        powershell = (SCRIPT_DIR / "install.ps1").read_text(encoding="utf-8")
+        self.assertIn("--max-filesize \"$max_manager_bytes\"", shell)
+        self.assertIn("(ulimit -f 1048576 && curl", shell)
+        self.assertIn('download_size=$(wc -c < "$manager_path"', shell)
+        self.assertIn('[ "$download_size" -le "$max_manager_bytes" ]', shell)
+        self.assertIn("$script:MaxManagerBytes = [long]536870912", powershell)
+        self.assertIn("$response.Content.Headers.ContentLength", powershell)
+        self.assertIn("$inputStream.ReadAsync($buffer, 0, $buffer.Length, $downloadTimeout.Token)", powershell)
+        self.assertIn("$client.GetAsync($current, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead, $downloadTimeout.Token)", powershell)
+        self.assertIn("$script:MaxManagerBytes - $received", powershell)
 
     def test_bootstrap_source_is_scoped_to_manager_child(self) -> None:
         """Pass the selected source to vmmm without exporting it or evaluating user text.

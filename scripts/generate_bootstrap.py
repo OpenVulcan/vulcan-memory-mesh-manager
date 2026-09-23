@@ -126,9 +126,9 @@ def render_template(template: str, replacement_table: Mapping[str, str]) -> str:
     return rendered
 
 
-def _atomic_write(path: Path, contents: str, mode: int) -> None:
-    """Atomically write generated text and preserve the shell executable bit.
-    原子写入生成文本，并保留 shell 脚本的可执行权限位。
+def _atomic_write(path: Path, contents: str, mode: int, encoding: str) -> None:
+    """Atomically write generated text with its platform encoding and executable bit.
+    按平台编码及可执行权限位原子写入生成文本。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -136,7 +136,7 @@ def _atomic_write(path: Path, contents: str, mode: int) -> None:
     )
     temporary_path = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+        with os.fdopen(descriptor, "w", encoding=encoding, newline="") as stream:
             stream.write(contents)
             stream.flush()
             os.fsync(stream.fileno())
@@ -176,7 +176,10 @@ def generate(
         if filename == "install.sh":
             mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
         output_path = output_dir / filename
-        _atomic_write(output_path, rendered, mode)
+        # Windows PowerShell 5.1 needs a BOM to decode bilingual UTF-8 script text reliably.
+        # Windows PowerShell 5.1 需要 BOM 才能可靠地按 UTF-8 解码双语脚本文本。
+        encoding = "utf-8-sig" if filename == "install.ps1" else "utf-8"
+        _atomic_write(output_path, rendered, mode, encoding)
         outputs.append(output_path)
     return outputs[0], outputs[1]
 

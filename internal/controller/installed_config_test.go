@@ -98,7 +98,9 @@ func TestExplicitRerankDisable(t *testing.T) {
 func TestRestagingReleasesPreviousLock(t *testing.T) {
 	controller, plan, _ := newFixtureController(t)
 	defer controller.discardStaged()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Windows CI may spend several seconds authenticating and extracting each real fixture archive.
+	// Windows 持续集成对每个真实夹具包进行认证与解包可能需要数秒，保留足够余量检测实际锁死。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for range 2 {
 		if err := controller.stagePackage(ctx, plan, make(chan tui.OperationEvent, 32)); err != nil {

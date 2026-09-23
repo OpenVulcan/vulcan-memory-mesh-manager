@@ -38,6 +38,27 @@ jobs:
         run: go vet ./...
       - name: Build native manager
         run: go build ./cmd/vmmm
+      - name: Parse POSIX bootstrap script
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sh -n scripts/install.sh
+          sh -c 'ulimit -f 1048576'
+      - name: Parse Windows bootstrap script
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/install.ps1'), [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+      - name: Verify Windows PowerShell 5.1 release bootstrap
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -m unittest scripts/test_generate_bootstrap.py -v
       - name: Verify real Windows PATH integration
         if: runner.os == 'Windows'
         shell: pwsh

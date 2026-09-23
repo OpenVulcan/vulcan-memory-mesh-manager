@@ -249,7 +249,15 @@ case "$temp_dir_real" in
 esac
 manager_path="$temp_dir_real/$asset_name"
 
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 600 --output "$manager_path" "$download_url" || fail 'manager download failed / 管理器下载失败'
+# Bound untrusted proxy output with both curl and a child-process file limit; older curl may not cap unknown-length streams.
+# 同时使用 curl 与子进程文件上限限制不可信代理输出；旧版 curl 可能不会限制未知长度的响应。
+max_manager_bytes=536870912
+(ulimit -f 1048576 && curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 600 --max-filesize "$max_manager_bytes" --output "$manager_path" "$download_url") || fail 'manager download failed / 管理器下载失败'
+download_size=$(wc -c < "$manager_path" | tr -d '[:space:]') || fail 'manager download size could not be checked / 无法核对管理器下载大小'
+case "$download_size" in
+    ''|*[!0-9]*) fail 'manager download size is invalid / 管理器下载大小无效' ;;
+esac
+[ "$download_size" -le "$max_manager_bytes" ] || fail 'manager download exceeds the size limit / 管理器下载超过大小上限'
 
 calculate_sha256() {
     target=$1
