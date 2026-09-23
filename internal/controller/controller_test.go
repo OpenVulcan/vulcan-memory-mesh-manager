@@ -382,7 +382,7 @@ func TestServiceAndPathLifecycleUsesDurableState(t *testing.T) {
 	if pathState.Owner != state.PATHOwnerManager || pathAdapter.installs != 1 {
 		t.Fatalf("unexpected PATH install: state=%+v installs=%d", pathState, pathAdapter.installs)
 	}
-	if err := controller.removePathRecord(plan.DataRoot); err != nil {
+	if err := controller.removePathRecord(controller.controlStateRoot()); err != nil {
 		t.Fatalf("removePathRecord() error = %v", err)
 	}
 	if pathAdapter.removes != 1 {
@@ -1119,7 +1119,7 @@ func (f *fakePath) Remove(pathctl.Record) error {
 func newFixtureController(t *testing.T) (*Controller, tui.InstallPlan, fixturePackage) {
 	t.Helper()
 	fixture := newFixturePackage(t)
-	base := testpath.CanonicalTempDir(t)
+	base := fixtureInstallBase(t)
 	plan := tui.InstallPlan{
 		Source:      tui.SourceOption{Source: download.DefaultSources()[0], Available: true},
 		Version:     tui.VersionOption{Tag: fixture.tag, Commit: fixture.commit, Available: true},
@@ -1173,6 +1173,34 @@ func newFixtureController(t *testing.T) (*Controller, tui.InstallPlan, fixturePa
 		t.Fatalf("New() error = %v", err)
 	}
 	return controller, plan, fixture
+}
+
+// fixtureInstallBase places privileged service fixtures below a root-owned, protected ancestor.
+// fixtureInstallBase 将特权服务测试目录放在由 root 持有且受保护的上级目录中。
+//
+// Unix service registration rejects world-writable /tmp and runner-owned ancestors by design;
+// the root test must exercise the same protected layout as a real system installation.
+// Unix 服务注册会按设计拒绝全局可写的 /tmp 和运行器持有的上级目录；
+// root 测试必须使用与真实系统安装相同的受保护目录布局。
+func fixtureInstallBase(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" || os.Geteuid() != 0 {
+		return testpath.CanonicalTempDir(t)
+	}
+	account, err := user.Lookup("root")
+	if err != nil || account.HomeDir == "" {
+		t.Fatalf("root account home lookup failed: %v", err)
+	}
+	rootHome, err := filepath.EvalSymlinks(account.HomeDir)
+	if err != nil {
+		t.Fatalf("resolve root home: %v", err)
+	}
+	base, err := os.MkdirTemp(rootHome, ".vmmm-controller-test-")
+	if err != nil {
+		t.Fatalf("create protected service fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	return base
 }
 
 // currentServiceUser returns the account that owns test-created configuration and data roots.
