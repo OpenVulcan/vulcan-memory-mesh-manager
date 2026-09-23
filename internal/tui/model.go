@@ -1890,6 +1890,14 @@ func (m *Model) setScreen(screen Screen) {
 	}
 	m.screen = screen
 	m.cursor = 0
+	if screen == ScreenSource {
+		for index, source := range m.sources {
+			if source.Source.ID == m.selectedSource.Source.ID {
+				m.cursor = index
+				break
+			}
+		}
+	}
 	m.input = ""
 	m.providerEditingField = -1
 	m.storageEditingField = -1

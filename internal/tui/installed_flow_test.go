@@ -66,7 +66,7 @@ func TestExplicitInteractiveEntries(t *testing.T) {
 		if model.Screen() != ScreenSource || model.plan.Rollback != (action == "rollback") || model.editingInstalled != (action == "edit") {
 			t.Fatalf("incorrect route for %s", action)
 		}
-		if model.selectedSource.Source.ID != source.ID {
+		if model.selectedSource.Source.ID != source.ID || model.sourceAt(model.cursor).Source.ID != source.ID {
 			t.Fatal("saved custom proxy was lost")
 		}
 	}
