@@ -5,16 +5,18 @@ package controller
 import (
 	"context"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configbridge"
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configedit"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/tui"
 )
 
-// TestCandidateWithRealVMM uses no network and no existing database; VMMM_TEST_VMM_BINARY selects the standard-layout validator.
-// TestCandidateWithRealVMM 不访问网络及既有数据库；VMMM_TEST_VMM_BINARY 指定标准布局中的真实校验器。
+// TestCandidateWithRealVMM uses only an isolated loopback listener and no existing database; VMMM_TEST_VMM_BINARY selects the standard-layout validator.
+// TestCandidateWithRealVMM 仅使用隔离回环监听器且不访问既有数据库；VMMM_TEST_VMM_BINARY 指定标准布局中的真实校验器。
 func TestCandidateWithRealVMM(t *testing.T) {
 	source := os.Getenv("VMMM_TEST_VMM_BINARY")
 	if source == "" {
@@ -79,5 +81,39 @@ func TestCandidateWithRealVMM(t *testing.T) {
 				t.Fatal("invalid rule reached the installed configuration")
 			}
 		}
+	}
+	// Hold a local port without serving gRPC so no unrelated runtime can satisfy the readiness probe.
+	// 占用本地端口但不提供 gRPC，确保无关运行实例无法令就绪探测成功。
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	configPath := filepath.Join(plan.ConfigRoot, "config.yaml")
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := configedit.Parse(configBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := draft.Set("grpc.listen_addr", configedit.ScalarString, listener.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	configBytes, err = draft.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := configbridge.New(binaryPath, plan.ConfigRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	health, err := client.Health(context.Background())
+	if err != nil || health.Class != "unreachable" {
+		t.Fatalf("real health protocol: %+v, %v", health, err)
 	}
 }

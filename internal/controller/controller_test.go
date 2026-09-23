@@ -1167,6 +1167,7 @@ func newFixtureControllerAt(t *testing.T, base string) (*Controller, tui.Install
 		Identity:              fixture.identity,
 		Process:               &fakeProcess{},
 		ServicePrivilegeCheck: func() error { return nil },
+		WaitHealthy:           func(context.Context, string, string) error { return nil },
 		Discover: func(context.Context, release.Request) (release.Result, error) {
 			return release.Result{Manifest: fixture.release, Product: manifest.ProductVMM, Repository: download.RepositoryVMM, Source: plan.Source.Source, Tag: fixture.tag, Commit: fixture.commit}, nil
 		},

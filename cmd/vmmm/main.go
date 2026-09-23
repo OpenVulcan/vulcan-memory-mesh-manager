@@ -1091,15 +1091,26 @@ func runDoctor(options commandOptions, environment commandEnvironment) int {
 		Installed  bool                          `json:"installed"`
 		Snapshot   tui.InstallationSnapshot      `json:"snapshot"`
 		Validation configbridge.ValidationResult `json:"validation"`
+		Health     configbridge.HealthResult     `json:"health"`
 	}{Installed: runtimeValue.installed, Snapshot: runtimeValue.snapshot, Validation: validation}
+	result.Health, err = bridge.Health(ctx)
+	if err != nil {
+		writeError(environment.stderr, err)
+		return 1
+	}
+	valid := result.Validation.Valid && result.Health.Class == "ok"
 	if options.JSON {
-		return encodeJSON(environment.stdout, result)
+		if code := encodeJSON(environment.stdout, result); code != 0 {
+			return code
+		}
+		return boolExit(valid)
 	}
 	_, _ = fmt.Fprintf(environment.stdout, "installed=%t\n", result.Installed)
 	_, _ = fmt.Fprintf(environment.stdout, "vmm=%s\n", result.Snapshot.VMMVersion)
 	_, _ = fmt.Fprintf(environment.stdout, "config=%s\n", result.Snapshot.ConfigRoot)
 	_, _ = fmt.Fprintf(environment.stdout, "valid=%t\n", result.Validation.Valid)
-	return boolExit(result.Validation.Valid)
+	_, _ = fmt.Fprintf(environment.stdout, "health=%s\n", result.Health.Class)
+	return boolExit(valid)
 }
 
 // runUninstall executes a data-preserving uninstall unless explicit removal flags are supplied.

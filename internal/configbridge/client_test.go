@@ -30,6 +30,11 @@ func TestConfigBridgeHelperProcess(t *testing.T) {
 	}
 	exitCode := 0
 	switch mode {
+	case "health-ok":
+		_, _ = fmt.Fprintln(os.Stdout, `{"status":"ok","class":"ok","elapsed_ms":1}`)
+	case "health-unreachable":
+		_, _ = fmt.Fprintln(os.Stdout, `{"status":"error","class":"unreachable","error":"grpc_unreachable","elapsed_ms":1}`)
+		exitCode = 1
 	case "schema":
 		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","config_type":"Config","fields":[{"path":"storage.mode","type":"string","sensitive":false,"enum":["native","split"],"default":"native"},{"path":"embedding.api_keys","type":"array","item_type":"string","sensitive":true}]}`)
 	case "schema-duplicate":

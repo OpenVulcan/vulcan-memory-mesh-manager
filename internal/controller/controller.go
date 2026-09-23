@@ -67,6 +67,9 @@ const (
 )
 
 var (
+	// ErrRuntimeNotHealthy distinguishes readiness failure from successful process creation.
+	// ErrRuntimeNotHealthy 将就绪失败与进程创建成功区分开。
+	ErrRuntimeNotHealthy = errors.New("VMM runtime did not become healthy")
 	// ErrNoStagedPackage means the user tried to install without completing package staging.
 	// ErrNoStagedPackage 表示用户未完成安装包暂存就请求安装。
 	ErrNoStagedPackage = errors.New("no verified VMM package is staged")
@@ -257,6 +260,9 @@ type Options struct {
 	// Schema 和 Validate 仅用于测试时替换 VMM CLI 桥接。
 	Schema   SchemaFunc
 	Validate ValidateFunc
+	// WaitHealthy checks runtime readiness after start; tests may supply a deterministic probe.
+	// WaitHealthy 在启动后检查运行时就绪状态；测试可提供确定性探测。
+	WaitHealthy func(context.Context, string, string) error
 	// Clock supplies timestamps for deterministic status tests.
 	// Clock 提供确定性状态测试所需的时间。
 	Clock func() time.Time
@@ -454,6 +460,15 @@ func New(options Options) (*Controller, error) {
 				return configbridge.ValidationResult{}, err
 			}
 			return client.Validate(ctx)
+		}
+	}
+	if options.WaitHealthy == nil {
+		options.WaitHealthy = func(ctx context.Context, binaryPath, configRoot string) error {
+			client, err := configbridge.New(binaryPath, configRoot)
+			if err != nil {
+				return err
+			}
+			return client.WaitHealthy(ctx)
 		}
 	}
 	if options.Clock == nil {
@@ -953,7 +968,7 @@ func (c *Controller) startInstalledRuntime(ctx context.Context, plan tui.Install
 		if err := client.Start(ctx, installed.Service.Name); err != nil {
 			return errors.New("new VMM service could not be started")
 		}
-		return nil
+		return c.checkRuntimeHealth(ctx, binaryPath, installed.Paths.ConfigRoot)
 	}
 	if c.process == nil {
 		return ErrProcessControlUnavailable
@@ -963,6 +978,19 @@ func (c *Controller) startInstalledRuntime(ctx context.Context, plan tui.Install
 	}
 	if err := c.process.Start(ctx, binaryPath, installed.Paths.ConfigRoot); err != nil {
 		return errors.New("new VMM foreground process could not be started")
+	}
+	return c.checkRuntimeHealth(ctx, binaryPath, installed.Paths.ConfigRoot)
+}
+
+// checkRuntimeHealth requires both a successful endpoint probe and the tracked runtime to remain running.
+// checkRuntimeHealth 同时要求端点探测成功且被跟踪的运行实例仍在运行；返回固定脱敏错误。
+func (c *Controller) checkRuntimeHealth(ctx context.Context, binaryPath, configRoot string) error {
+	if err := c.options.WaitHealthy(ctx, binaryPath, configRoot); err != nil {
+		return ErrRuntimeNotHealthy
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil || !snapshot.Running {
+		return ErrRuntimeNotHealthy
 	}
 	return nil
 }
@@ -1347,6 +1375,11 @@ func (c *Controller) serviceAction(ctx context.Context, request tui.OperationReq
 			}
 		default:
 			return errors.New("service registration requires service mode")
+		}
+	}
+	if request.ServiceAction == tui.ServiceActionStart || request.ServiceAction == tui.ServiceActionRestart {
+		if err := c.checkRuntimeHealth(ctx, binaryPath, configRoot); err != nil {
+			return err
 		}
 	}
 	snapshot, err := c.snapshot(ctx)
@@ -2321,6 +2354,9 @@ func safeOperationError(err error) string {
 	}
 	if errors.Is(err, ErrPathRecordUnavailable) {
 		return "Manager PATH integration cannot be safely reversed"
+	}
+	if errors.Is(err, ErrRuntimeNotHealthy) {
+		return "VMM runtime did not become healthy; run vmmm doctor for diagnostics"
 	}
 	return "Operation failed"
 }
