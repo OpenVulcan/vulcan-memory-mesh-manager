@@ -5,7 +5,10 @@
 package install
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -22,6 +25,9 @@ type ownershipRecord struct {
 	info os.FileInfo
 	uid  uint32
 	gid  uint32
+	// credentialDigest authenticates the byte-identical .env replacement made by credential rollback.
+	// credentialDigest 验证凭据回退产生的字节完全相同的 .env 替换文件。
+	credentialDigest string
 }
 
 // TransferServiceRoots changes only the explicit configuration and data roots after the caller stops VMM; finalize commits or rolls back.
@@ -63,7 +69,17 @@ func TransferServiceRoots(paths state.InstallPaths, account string) (finalize fu
 					continue
 				}
 				info, err := file.Stat()
-				if err == nil && os.SameFile(info, record.info) {
+				matches := err == nil && os.SameFile(info, record.info)
+				// Credential restoration deliberately replaces the inode; accept only identical bounded bytes in a regular single-link file.
+				// 凭据恢复会明确替换 inode；仅接受普通单链接文件中完全相同的有界字节。
+				if err == nil && !matches && record.credentialDigest != "" {
+					metadata, ok := info.Sys().(*syscall.Stat_t)
+					if ok && info.Mode().IsRegular() && metadata.Nlink == 1 {
+						digest, digestErr := ownershipCredentialDigest(file)
+						matches = digestErr == nil && digest == record.credentialDigest
+					}
+				}
+				if err == nil && matches {
 					err = file.Chown(int(record.uid), int(record.gid))
 				} else if err == nil {
 					err = errors.New("ownership rollback found a replaced file")
@@ -128,10 +144,17 @@ func TransferServiceRoots(paths state.InstallPaths, account string) (finalize fu
 			if metadata.Uid == identity.uid && metadata.Gid == identity.gid {
 				return nil
 			}
+			record := ownershipRecord{root: root, path: relative, info: current, uid: metadata.Uid, gid: metadata.Gid}
+			if directory == paths.ConfigRoot && relative == ".env" {
+				record.credentialDigest, err = ownershipCredentialDigest(file)
+				if err != nil {
+					return err
+				}
+			}
 			if err := file.Chown(int(identity.uid), int(identity.gid)); err != nil {
 				return err
 			}
-			changes = append(changes, ownershipRecord{root: root, path: relative, info: current, uid: metadata.Uid, gid: metadata.Gid})
+			changes = append(changes, record)
 			return nil
 		})
 		if err != nil {
@@ -149,4 +172,15 @@ func openOwnershipFile(root *os.Root, relative string, directory bool) (*os.File
 		flags |= syscall.O_DIRECTORY
 	}
 	return root.OpenFile(relative, flags, 0)
+}
+
+// ownershipCredentialDigest hashes the bounded credential snapshot without storing or reporting secret bytes.
+// ownershipCredentialDigest 为有界凭据快照计算摘要，不保存或报告秘密字节。
+func ownershipCredentialDigest(file *os.File) (string, error) {
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(file, maxConfigFileBytes+1))
+	if err != nil || size > maxConfigFileBytes {
+		return "", errors.New("credential snapshot exceeds ownership rollback limits")
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }

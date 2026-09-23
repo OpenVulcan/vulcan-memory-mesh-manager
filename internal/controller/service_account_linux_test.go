@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/credentials"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/install"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/service"
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/state"
@@ -106,20 +107,34 @@ func TestServiceOwnershipRollback(t *testing.T) {
 	if err := os.WriteFile(file, []byte("preserved"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	envPath := filepath.Join(paths.ConfigRoot, ".env")
+	originalCredential := []byte("TEST_KEY=preserved\n")
+	if err := os.WriteFile(envPath, originalCredential, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	finish, err := install.TransferServiceRoots(paths, account.Username)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{paths.ConfigRoot, paths.DataRoot, file} {
+	for _, path := range []string{paths.ConfigRoot, paths.DataRoot, file, envPath} {
 		info, err := os.Stat(path)
 		if err != nil || info.Sys().(*syscall.Stat_t).Uid != uint32(uid) {
 			t.Fatalf("ownership transfer failed: %s", path)
 		}
 	}
+	// The real credential rollback restores bytes through an atomic replacement before directory ownership is reverted.
+	// 真实凭据回退在目录归属恢复前，通过原子替换恢复原始字节。
+	gid, err := strconv.ParseUint(account.Gid, 10, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.RestoreAs(envPath, originalCredential, credentials.Owner{UID: uint32(uid), GID: uint32(gid)}); err != nil {
+		t.Fatal(err)
+	}
 	if err := finish(false); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{paths.ConfigRoot, paths.DataRoot, file} {
+	for _, path := range []string{paths.ConfigRoot, paths.DataRoot, file, envPath} {
 		info, err := os.Stat(path)
 		if err != nil || info.Sys().(*syscall.Stat_t).Uid != 0 {
 			t.Fatalf("ownership rollback failed: %s", path)
