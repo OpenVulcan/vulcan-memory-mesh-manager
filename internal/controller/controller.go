@@ -1545,6 +1545,13 @@ func (c *Controller) buildConfigFiles(ctx context.Context, plan tui.InstallPlan,
 	if err := editor.ApplyStorage(storage); err != nil {
 		return nil, errors.New("selected storage configuration is incomplete")
 	}
+	if plan.ServiceMode == tui.ServiceModeService {
+		// A privileged package root is intentionally immutable to the selected service account.
+		// 特权程序包根目录对所选服务账户保持不可写，因此日志必须放在账户持有的数据根中。
+		if err := editor.SetScalar("logging.directory", filepath.Join(plan.DataRoot, "logs")); err != nil {
+			return nil, errors.New("service logging directory is absent from the VMM configuration schema")
+		}
+	}
 	for _, field := range plan.ConfigFields {
 		if field.Path == "" || !field.Editable || !field.Changed {
 			continue
@@ -2172,9 +2179,9 @@ func validatePlanRoots(plan tui.InstallPlan) error {
 // servicePathChecks 将安装计划展开为服务账户实际需要访问的全部路径。
 //
 // The list includes the binary root and file, configuration and data roots, selected native
-// database paths, the generated config file, and the protected dotenv file. This is used both
+// database and log paths, the generated config file, and the protected dotenv file. This is used both
 // before commit and after commit; the second pass validates files actually created by install.
-// 列表包括二进制根和文件、配置与数据根、选定的原生数据库路径、生成的配置文件以及受保护
+// 列表包括二进制根和文件、配置与数据根、选定的原生数据库与日志路径、生成的配置文件以及受保护
 // 的 dotenv 文件。提交前后都会执行，第二次用于校验安装实际创建的文件。
 func (c *Controller) servicePathChecks(plan tui.InstallPlan, configRoot string, dataRoot string) []servicePathCheck {
 	if configRoot == "" {
@@ -2203,6 +2210,7 @@ func (c *Controller) servicePathChecks(plan tui.InstallPlan, configRoot string, 
 	}
 	add(configRoot, true, false)
 	add(dataRoot, true, false)
+	add(filepath.Join(dataRoot, "logs"), true, false)
 	add(filepath.Join(configRoot, defaultConfigFileName), false, false)
 	add(filepath.Join(configRoot, ".env"), false, false)
 

@@ -492,6 +492,28 @@ func TestUpgradeRejectsPostgreSQLCredentialChange(t *testing.T) {
 	}
 }
 
+// TestServicePlanWritesWritableLogDirectory verifies a service never relies on the administrator-owned package for file logs.
+// TestServicePlanWritesWritableLogDirectory 验证服务文件日志不会依赖管理员持有的程序包目录。
+func TestServicePlanWritesWritableLogDirectory(t *testing.T) {
+	controller, plan, _ := newFixtureController(t)
+	plan.ServiceMode = tui.ServiceModeService
+	files, err := controller.buildConfigFiles(context.Background(), plan, plan.ProgramRoot)
+	if err != nil {
+		t.Fatalf("build service configuration: %v", err)
+	}
+	draft, err := configedit.Parse(files[defaultConfigFileName])
+	if err != nil {
+		t.Fatalf("parse service configuration: %v", err)
+	}
+	actual, err := draft.Get("logging.directory")
+	if err != nil {
+		t.Fatalf("read service log directory: %v", err)
+	}
+	if want := filepath.Join(plan.DataRoot, "logs"); actual.Value != want {
+		t.Fatalf("service log directory = %q, want %q", actual.Value, want)
+	}
+}
+
 // TestUpgradeRebindsAndRestartsRunningService verifies service registration migration around an upgrade.
 // TestUpgradeRebindsAndRestartsRunningService 验证升级时会迁移服务注册并恢复原运行状态。
 func TestUpgradeRebindsAndRestartsRunningService(t *testing.T) {
@@ -1139,6 +1161,7 @@ func testSchema() configbridge.Schema {
 		Version:    "v1",
 		ConfigType: "Config",
 		Fields: []configbridge.Field{
+			{Path: "logging.directory", Type: "string"},
 			{Path: "storage.mode", Type: "string", Enum: []string{"native", "split", "controller", "combined"}},
 			{Path: "storage.local_data_root", Type: "string"},
 			{Path: "storage.combined_provider", Type: "string", Enum: []string{"postgres"}},
