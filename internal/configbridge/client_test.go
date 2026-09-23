@@ -41,6 +41,8 @@ func TestConfigBridgeHelperProcess(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","purpose":"embedding","route":0,"success":true,"class":"ok"}`)
 	case "effective":
 		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","redacted":true,"config":{"grpc":{"listen_addr":"127.0.0.1:17625"},"embedding":{"model":"effective-model"}}}`)
+	case "effective-sources":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v2","redacted":true,"config":{"logging":{"level":"debug"},"memory_pipeline":{"min_similarity_score":null}},"sources":{"/logging/level":{"kind":"file","file":"config.yaml","normalized":true},"/memory_pipeline/min_similarity_score":{"kind":"initial"}}}`)
 	case "effective-unredacted":
 		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","redacted":false,"config":{"embedding":{"model":"test"}}}`)
 	case "effective-version":

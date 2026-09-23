@@ -4,10 +4,12 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/OpenVulcan/vulcan-memory-mesh-manager/internal/configbridge"
@@ -61,16 +63,34 @@ func TestCandidateWithRealVMM(t *testing.T) {
 		}
 		return client.Validate(ctx)
 	}
+	controller.options.Effective = func(ctx context.Context, _ string, candidate string) (configbridge.EffectiveConfig, error) {
+		client, err := configbridge.New(binaryPath, candidate)
+		if err != nil {
+			return configbridge.EffectiveConfig{}, err
+		}
+		return client.Effective(ctx)
+	}
 	plan.Providers = tui.ProviderPlan{
 		LLMRoutes:         []tui.ProviderRoute{{Name: "test", Provider: "openai", Endpoint: "https://api.openai.com/v1", Model: "test-model", APIKeyEnvironmentNames: []string{"VMMM_TEST_KEY"}}},
 		Embedding:         &tui.ProviderRoute{Provider: "openai", Endpoint: "https://api.openai.com/v1", Model: "test-embedding", Dimension: 1024, APIKeyEnvironmentNames: []string{"VMMM_TEST_KEY"}},
 		CredentialUpdates: []tui.CredentialUpdate{{EnvironmentName: "VMMM_TEST_KEY", Value: "local-validation-only"}},
 		RerankConfigured:  true,
 	}
-	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationValidate, tui.OperationInstall} {
+	for _, kind := range []tui.OperationKind{tui.OperationStagePackage, tui.OperationValidate, tui.OperationEffective, tui.OperationInstall} {
 		events := collectOperation(t, controller, tui.OperationRequest{Kind: kind, Plan: plan})
 		if terminalKind(events) != tui.OperationEventCompleted {
 			t.Fatalf("real validator failed for %s: %+v", kind, events)
+		}
+		if kind == tui.OperationEffective {
+			found := false
+			for _, event := range events {
+				if event.Effective != nil && event.Effective.Candidate && len(event.Effective.Fields) > 0 {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("real candidate effective configuration was not projected")
+			}
 		}
 		if kind == tui.OperationValidate {
 			invalid := plan
@@ -140,5 +160,22 @@ func TestCandidateWithRealVMM(t *testing.T) {
 	nullValidation, err := client.Validate(context.Background())
 	if err != nil || !nullValidation.Valid {
 		t.Fatalf("real runtime rejected nullable scalar: %+v %v", nullValidation, err)
+	}
+	// A null similarity input is normalized by VMM; its file origin must survive with a normalization marker.
+	// VMM 会归一化空相似度输入；其文件来源必须保留，并标记归一化，不应将生效值冒充原始空值。
+	effective, err := client.Effective(context.Background())
+	if err != nil || effective.Version != "v2" {
+		t.Fatalf("real effective protocol failed: %v", err)
+	}
+	var pipeline map[string]json.RawMessage
+	if err := json.Unmarshal(effective.Config["memory_pipeline"], &pipeline); err != nil || len(pipeline["min_similarity_score"]) == 0 || string(pipeline["min_similarity_score"]) == "null" {
+		t.Fatal("real effective export lost normalized similarity")
+	}
+	if source := effective.Sources["/memory_pipeline/min_similarity_score"]; source.Kind != "file" || source.File != configPath || !source.Normalized {
+		t.Fatalf("real nullable origin mismatch: %+v", source)
+	}
+	encoded, err := json.Marshal(effective)
+	if err != nil || strings.Contains(string(encoded), "local-validation-only") {
+		t.Fatal("real effective output exposed credentials")
 	}
 }

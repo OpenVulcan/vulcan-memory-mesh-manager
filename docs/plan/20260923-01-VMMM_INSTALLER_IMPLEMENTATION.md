@@ -292,3 +292,16 @@ VMM 提交 `efd6027` 对应的原生持续集成已在五个平台全部通过�
 4. 验证与边界：二十七项界面测试通过。最近校验时间及最终配置逐字段来源仍待补齐，不能将此首页调整视为整份方案全部完成。连续无问题审核计数保持零。
 
 命令入口修正提交 `9064b11` 的原生持续集成运行 `35882568353` 已全部通过：Windows 真实注册表、Linux 两种架构系统链接、macOS 两种架构登录 shell 路径登记均完成注册、执行及撤销。后续首页提交 `b8ba896` 已通过本机界面测试，其五平台持续集成仍在执行。正式发行状态未改变。
+
+### 生效配置及来源执行记录
+
+1. 核心调整：补齐方案要求的最终配置来源查看。首页查看已保存配置，确认页重新校验并查看候选配置；VMM 在真实加载链记录来源，管理器不重新实现配置合并。
+2. 文件变更：新增控制器及界面的生效配置查看与测试；修改配置命令桥及协议测试、控制器调度、界面导航和双语消息、真实运行时集成测试、仓库说明和本计划。另独立修复存储测试误读开发覆盖的问题。
+3. 关键逻辑：第二版协议要求每个可见叶子有合法来源；兼容第一版时明确来源未提供。候选沿用隔离配置、暂存凭据、真实规则校验和已验证程序，读取后清理临时目录；查看本身不提交安装。页面按 JSON Pointer 展示来源及长值，编辑后丢弃旧查看结果。
+4. 验证及边界：配置桥二十八项、控制器与界面八十三项测试通过；真实 VMM 贯通候选和已保存配置，确认显式空相似度经运行时归一化后仍携带正确文件来源。原存储测试依赖开发配置，已改为独立离线供应商夹具，真实校验通过。最新完整源码仍须全量及五平台验收；最终连续无问题审核计数保持零。首页记录提交 `f45f662` 的五平台运行 `35882944730` 已全部通过。Certum 与公开发行验收仍待完成。
+
+最新验证：使用隔离标准构建的真实 VMM 执行完整三百七十九项测试通过，随后增加真实按键及异步事件路由检查，界面二十九项测试通过；静态检查通过。存储测试夹具修复单独提交为 `b4fb497`。五平台持续集成等待新提交，最近校验时间仍待后续补齐。
+
+- 新增：`internal/controller/effective.go`、`internal/controller/effective_test.go`、`internal/tui/effective.go`、`internal/tui/effective_test.go`。
+- 修改：`internal/configbridge/effective.go`、`internal/configbridge/effective_test.go`、`internal/configbridge/client_test.go`、`internal/controller/controller.go`、`internal/controller/validator_integration_test.go`、`internal/tui/types.go`、`internal/tui/model.go`、`internal/tui/model_test.go`、`internal/tui/view.go`、`internal/tui/operation_text.go`、`internal/install/data_root_windows_test.go`、`README.md`、本计划。
+- 删除：无。

@@ -88,6 +88,9 @@ const (
 	// ScreenConfigPreview displays the redacted candidate writes before final confirmation.
 	// ScreenConfigPreview 在最终确认前展示脱敏的候选写入。
 	ScreenConfigPreview
+	// ScreenEffective shows read-only runtime values and authoritative field origins.
+	// ScreenEffective 展示只读运行时值与权威字段来源。
+	ScreenEffective
 	// ScreenRunning displays the running or service-managed instance state.
 	// ScreenRunning 展示前台或服务管理实例的运行状态。
 	ScreenRunning
@@ -225,6 +228,9 @@ const (
 	// OperationValidate validates the saved configuration with the VMM CLI.
 	// OperationValidate 使用 VMM CLI 校验已保存配置。
 	OperationValidate OperationKind = "validate"
+	// OperationEffective reads saved or validated candidate effective configuration.
+	// OperationEffective 读取已保存或已校验候选配置的最终生效值。
+	OperationEffective OperationKind = "effective"
 	// OperationTestProvider executes the explicitly confirmed online diagnostic.
 	// OperationTestProvider 执行明确确认的在线诊断。
 	OperationTestProvider OperationKind = "test-provider"
@@ -799,6 +805,9 @@ type OperationRequest struct {
 // OperationEvent is emitted by Controller.Start and is safe for direct TUI rendering.
 // OperationEvent 由 Controller.Start 发出，可直接安全渲染到 TUI。
 type OperationEvent struct {
+	// Effective contains redacted effective values and their runtime-provided origins.
+	// Effective 携带脱敏生效值及运行时提供的来源。
+	Effective *EffectiveConfiguration
 	// Preview contains only display-safe changes for the successfully validated candidate.
 	// Preview 仅包含已成功校验候选配置的安全展示变化。
 	Preview *ConfigPreview

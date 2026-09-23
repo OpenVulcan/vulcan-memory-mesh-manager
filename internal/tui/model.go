@@ -20,6 +20,9 @@ import (
 // Model is the Bubble Tea state machine for first install and installed management.
 // Model 是首次安装与已安装管理使用的 Bubble Tea 状态机。
 type Model struct {
+	// effective is a read-only result tied to the last explicit inspection operation.
+	// effective 是最近一次明确查看操作的只读结果。
+	effective *EffectiveConfiguration
 	// configPreview belongs to the current validated plan and contains no secret values.
 	// configPreview 属于当前已校验计划，且不包含秘密值。
 	configPreview *ConfigPreview
@@ -554,6 +557,8 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 		m.setScreen(ScreenConfigCheck)
 	case ScreenConfigPreview:
 		m.setScreen(ScreenConfirm)
+	case ScreenEffective:
+		m.setScreen(m.operationScreen)
 	case ScreenProviderTest:
 		m.setScreen(ScreenConfigCheck)
 	case ScreenRunning, ScreenDone, ScreenError:
@@ -811,6 +816,9 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 			m.setScreen(ScreenConfirm)
 		}
 	case ScreenConfirm:
+		if m.cursor == 3 && m.configPreview != nil {
+			return m, m.beginOperation(OperationRequest{Kind: OperationEffective, Plan: m.plan})
+		}
 		if m.cursor == 2 && m.configPreview != nil {
 			m.setScreen(ScreenConfigPreview)
 			return m, nil
@@ -827,6 +835,10 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 	case ScreenConfigPreview:
 		if m.cursor == 0 {
 			m.setScreen(ScreenConfirm)
+		}
+	case ScreenEffective:
+		if m.cursor == 0 {
+			m.setScreen(m.operationScreen)
 		}
 	case ScreenProviderTest:
 		if m.cursor == 0 {
@@ -1558,6 +1570,8 @@ func (m *Model) activateHomeSelection() (tea.Model, tea.Cmd) {
 		m.plan.Version = VersionOption{Tag: m.snapshot.VMMVersion, Available: true}
 		m.setScreen(ScreenSource)
 		m.status = m.label("重新下载签名包并检查配置后安装，保留数据库", "Download the signed package and validate configuration before reinstalling; keep databases")
+	case 12:
+		return m, m.beginOperation(OperationRequest{Kind: OperationEffective})
 	}
 	return m, nil
 }
@@ -1603,6 +1617,9 @@ func (m *Model) activateUninstallSelection() (tea.Model, tea.Cmd) {
 // beginOperation starts a controller stream in a Bubble Tea command closure.
 // beginOperation 在 Bubble Tea 命令闭包中启动 Controller 事件流。
 func (m *Model) beginOperation(request OperationRequest) tea.Cmd {
+	if request.Kind == OperationEffective {
+		m.effective = nil
+	}
 	if request.Kind == OperationInstall && !m.validation.Valid {
 		m.operationScreen = m.screen
 		m.lastRequest = request
@@ -1702,6 +1719,11 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 	}
 	if message.event.Snapshot != nil {
 		m.snapshot = *message.event.Snapshot
+	}
+	if message.event.Effective != nil {
+		result := *message.event.Effective
+		result.Fields = append([]EffectiveField(nil), result.Fields...)
+		m.effective = &result
 	}
 	if message.event.Preview != nil {
 		m.configPreview = &ConfigPreview{Changes: append([]ConfigChange(nil), message.event.Preview.Changes...)}
@@ -1840,6 +1862,13 @@ func (m *Model) routeCompletedOperation() {
 		} else {
 			m.setScreen(ScreenConfigCheck)
 		}
+	case OperationEffective:
+		if m.effective == nil {
+			m.errorMessage = m.label("运行时未返回生效配置", "Runtime did not return effective configuration")
+			m.setScreen(ScreenError)
+			return
+		}
+		m.setScreen(ScreenEffective)
 	case OperationTestProvider:
 		m.setScreen(ScreenConfigCheck)
 	case OperationInstall:
@@ -1897,7 +1926,7 @@ func (m *Model) itemCount() int {
 	case ScreenLanguage:
 		return 2
 	case ScreenHome:
-		return 12
+		return 13
 	case ScreenSource:
 		return len(m.sources) + 1
 	case ScreenVersion:
@@ -1929,11 +1958,13 @@ func (m *Model) itemCount() int {
 		return 4
 	case ScreenConfirm:
 		if m.configPreview != nil {
-			return 3
+			return 4
 		}
 		return 2
 	case ScreenConfigPreview:
 		return len(m.previewRows())
+	case ScreenEffective:
+		return len(m.effectiveRows())
 	case ScreenRunning:
 		return 5
 	case ScreenUninstall:
@@ -1973,6 +2004,7 @@ func (m *Model) setScreen(screen Screen) {
 // invalidateValidation marks the current plan dirty so only a fresh VMM validation can confirm it.
 // invalidateValidation 将当前计划标记为已修改，只有重新通过 VMM 检查才能确认。
 func (m *Model) invalidateValidation() {
+	m.effective = nil
 	m.validation = ValidationSummary{}
 	m.providerTest = nil
 	m.configPreview = nil

@@ -57,6 +57,8 @@ func (c *testController) Start(_ context.Context, request OperationRequest) (<-c
 		stream <- OperationEvent{Kind: OperationEventCompleted, Validation: validation}
 	case OperationInstall:
 		stream <- OperationEvent{Kind: OperationEventCompleted, Snapshot: &InstallationSnapshot{Installed: true, VMMVersion: "v0.1.0", Storage: request.Plan.Storage.Mode, ServiceMode: request.Plan.ServiceMode}}
+	case OperationEffective:
+		stream <- OperationEvent{Kind: OperationEventCompleted, Effective: &EffectiveConfiguration{Candidate: request.Plan.Version.Tag != "", Fields: []EffectiveField{{Pointer: "/logging/level", Value: `"debug"`, Kind: "file", File: "config.yaml"}}}}
 	default:
 		stream <- OperationEvent{Kind: OperationEventCompleted}
 	}

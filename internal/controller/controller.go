@@ -263,6 +263,9 @@ type Options struct {
 	// Schema 和 Validate 仅用于测试时替换 VMM CLI 桥接。
 	Schema   SchemaFunc
 	Validate ValidateFunc
+	// Effective reads authoritative redacted values and sources; tests can inject an offline result.
+	// Effective 读取权威脱敏值及来源；测试可以注入离线结果。
+	Effective func(context.Context, string, string) (configbridge.EffectiveConfig, error)
 	// TestProvider invokes paid diagnostics only after explicit consent; tests inject offline clients.
 	// TestProvider 仅在明确确认后调用可能收费的诊断；测试注入离线客户端。
 	TestProvider func(context.Context, string, string, string, int, bool) (configbridge.ProviderTestResult, error)
@@ -477,6 +480,15 @@ func New(options Options) (*Controller, error) {
 			return client.WaitHealthy(ctx)
 		}
 	}
+	if options.Effective == nil {
+		options.Effective = func(ctx context.Context, binary, root string) (configbridge.EffectiveConfig, error) {
+			client, err := configbridge.New(binary, root)
+			if err != nil {
+				return configbridge.EffectiveConfig{}, err
+			}
+			return client.Effective(ctx)
+		}
+	}
 	if options.TestProvider == nil {
 		options.TestProvider = func(ctx context.Context, binaryPath, configRoot, purpose string, route int, confirmed bool) (configbridge.ProviderTestResult, error) {
 			client, err := configbridge.New(binaryPath, configRoot)
@@ -652,7 +664,13 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 	case tui.OperationInstall:
 		err = c.install(ctx, request.Plan, events)
 	case tui.OperationValidate:
-		err = c.validate(ctx, request.Plan, events)
+		err = c.validate(ctx, request.Plan, events, false)
+	case tui.OperationEffective:
+		if request.Plan.Version.Tag != "" {
+			err = c.validate(ctx, request.Plan, events, true)
+		} else {
+			err = c.installedEffective(ctx, events)
+		}
 	case tui.OperationTestProvider:
 		err = c.testProvider(ctx, request, events)
 	case tui.OperationService:
@@ -1255,7 +1273,7 @@ func (c *Controller) stopCandidateRuntime(ctx context.Context, candidate state.S
 
 // validate runs the VMM validator against a temporary candidate tree without changing official roots.
 // validate 在临时候选树上运行 VMM 校验，不修改正式目录。
-func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent) error {
+func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events chan<- tui.OperationEvent, includeEffective bool) error {
 	prepared, err := c.matchStaged(plan)
 	if err != nil {
 		return err
@@ -1309,6 +1327,9 @@ func (c *Controller) validate(ctx context.Context, plan tui.InstallPlan, events 
 	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventProgress, Validation: &summary, Preview: preview, Progress: tui.Progress{Stage: "validate-config", Message: summary.Summary}})
 	if !validation.Valid {
 		return errors.New("VMM configuration is invalid")
+	}
+	if includeEffective {
+		return c.emitEffective(ctx, binaryPath, candidate, true, events)
 	}
 	return nil
 }

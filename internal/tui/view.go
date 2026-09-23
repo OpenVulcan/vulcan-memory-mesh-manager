@@ -92,6 +92,8 @@ func (m *Model) renderPage() []string {
 		return m.renderLanguage()
 	case ScreenHome:
 		return m.renderHome()
+	case ScreenEffective:
+		return m.renderEffective()
 	case ScreenSource:
 		return m.renderSource()
 	case ScreenCustomSource:
@@ -209,6 +211,7 @@ func (m *Model) renderHome() []string {
 		m.text(i18n.KeyUninstallTitle, nil),
 		m.label("回滚到指定版本", "Roll back to a selected release"),
 		m.label("重新安装 / 修复", "Reinstall / repair"),
+		m.label("查看生效配置及来源", "View effective configuration and origins"),
 	} {
 		lines = append(lines, m.option(index, item))
 	}
@@ -651,6 +654,7 @@ func (m *Model) renderConfirm() []string {
 	)
 	if m.configPreview != nil {
 		lines = append(lines, m.option(2, fmt.Sprintf(m.label("查看配置写入差异（%d 项）", "Review configuration writes (%d changes)"), len(m.configPreview.Changes))))
+		lines = append(lines, m.option(3, m.label("查看候选生效配置及来源", "View candidate effective configuration and origins")))
 	}
 	return lines
 }

@@ -4,6 +4,7 @@ package configbridge
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,6 +21,35 @@ func TestEffectiveUsesAuthoritativeCommand(t *testing.T) {
 	expected := []string{"config", "show-effective", "--config", client.configRoot, "--json"}
 	if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0], expected) || !result.Redacted || !strings.Contains(string(result.Config["embedding"]), "effective-model") {
 		t.Fatal("effective export did not use the runtime contract")
+	}
+}
+
+// TestEffectiveSourcesChecksCoverage retains runtime nulls and rejects incomplete or invented origin metadata.
+// TestEffectiveSourcesChecksCoverage 保留运行时空值，并拒绝来源覆盖缺失或伪造的字段元数据。
+func TestEffectiveSourcesChecksCoverage(t *testing.T) {
+	client, _ := newFixtureClient(t, "effective-sources")
+	result, err := client.Effective(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Sources["/logging/level"].File != "config.yaml" || !strings.Contains(string(result.Config["memory_pipeline"]), "null") {
+		t.Fatal("source or null lost")
+	}
+	for _, mutate := range []func(*EffectiveConfig){
+		func(r *EffectiveConfig) { delete(r.Sources, "/logging/level") },
+		func(r *EffectiveConfig) { r.Sources["/logging/level"] = ConfigValueSource{Kind: "file"} },
+		func(r *EffectiveConfig) { r.Sources["/logging/level"] = ConfigValueSource{Kind: "guessed"} },
+		func(r *EffectiveConfig) { r.Version = "v1" },
+	} {
+		body, _ := json.Marshal(result)
+		var candidate EffectiveConfig
+		if err := json.Unmarshal(body, &candidate); err != nil {
+			t.Fatal(err)
+		}
+		mutate(&candidate)
+		if validateEffectiveSources(candidate) == nil {
+			t.Fatal("invalid origins accepted")
+		}
 	}
 }
 
