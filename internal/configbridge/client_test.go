@@ -30,6 +30,15 @@ func TestConfigBridgeHelperProcess(t *testing.T) {
 	}
 	exitCode := 0
 	switch mode {
+	case "provider-ok":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","purpose":"llm","route":0,"success":true,"class":"ok"}`)
+	case "provider-failed":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","purpose":"llm","route":0,"success":false,"class":"request-failed"}`)
+		exitCode = 1
+	case "provider-contradiction":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","purpose":"llm","route":0,"success":true,"class":"request-failed"}`)
+	case "provider-selection":
+		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","purpose":"embedding","route":0,"success":true,"class":"ok"}`)
 	case "effective":
 		_, _ = fmt.Fprintln(os.Stdout, `{"version":"v1","redacted":true,"config":{"grpc":{"listen_addr":"127.0.0.1:17625"},"embedding":{"model":"effective-model"}}}`)
 	case "effective-unredacted":

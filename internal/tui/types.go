@@ -79,6 +79,9 @@ const (
 	// ScreenConfigCheck displays the authoritative VMM validation summary.
 	// ScreenConfigCheck 展示 VMM 权威配置校验摘要。
 	ScreenConfigCheck
+	// ScreenProviderTest requires an explicit selection after the network cost warning.
+	// ScreenProviderTest 在网络费用提示后要求用户明确选择。
+	ScreenProviderTest
 	// ScreenConfirm asks for final execution confirmation.
 	// ScreenConfirm 询问最终执行确认。
 	ScreenConfirm
@@ -219,6 +222,9 @@ const (
 	// OperationValidate validates the saved configuration with the VMM CLI.
 	// OperationValidate 使用 VMM CLI 校验已保存配置。
 	OperationValidate OperationKind = "validate"
+	// OperationTestProvider executes the explicitly confirmed online diagnostic.
+	// OperationTestProvider 执行明确确认的在线诊断。
+	OperationTestProvider OperationKind = "test-provider"
 	// OperationService applies one service lifecycle action.
 	// OperationService 执行一项服务生命周期操作。
 	OperationService OperationKind = "service"
@@ -757,6 +763,10 @@ type UninstallOptions struct {
 // OperationRequest carries one user-approved controller action.
 // OperationRequest 携带一个经用户确认的 Controller 操作。
 type OperationRequest struct {
+	// ProviderPurpose and ConfirmProviderNetwork bind a potentially paid request to the user's confirmation.
+	// ProviderPurpose 与 ConfirmProviderNetwork 将可能收费的请求绑定到用户确认。
+	ProviderPurpose        ProviderPurpose
+	ConfirmProviderNetwork bool
 	// Kind selects the controller operation.
 	// Kind 选择 Controller 操作。
 	Kind OperationKind
@@ -783,6 +793,9 @@ type OperationRequest struct {
 // OperationEvent is emitted by Controller.Start and is safe for direct TUI rendering.
 // OperationEvent 由 Controller.Start 发出，可直接安全渲染到 TUI。
 type OperationEvent struct {
+	// ProviderTest is separate from static configuration validation and contains only fixed result codes.
+	// ProviderTest 独立于静态配置校验，仅包含固定结果码。
+	ProviderTest *ProviderTestSummary
 	// Kind identifies progress, completion, failure, or cancellation.
 	// Kind 标识进度、完成、失败或取消。
 	Kind OperationEventKind

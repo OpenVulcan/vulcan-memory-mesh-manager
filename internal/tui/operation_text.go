@@ -7,6 +7,7 @@ package tui
 // Runtime diagnostics and configuration values are preserved verbatim because their text is owned by VMM or the user.
 // 运行时诊断与配置值由 VMM 或用户拥有，保持原文以避免改变其含义。
 var operationChinese = map[string]string{
+	"test-provider": "测试供应商",
 	"Service program files are damaged; stop the service with the operating system and restore the verified package at the original program root before retrying": "服务程序文件已损坏；请通过操作系统停止服务，将已验证的安装包恢复到原程序目录后重试",
 	"unverified":                                         "未验证",
 	"not-installed":                                      "尚未注册",

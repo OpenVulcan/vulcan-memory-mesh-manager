@@ -263,6 +263,9 @@ type Options struct {
 	// Schema 和 Validate 仅用于测试时替换 VMM CLI 桥接。
 	Schema   SchemaFunc
 	Validate ValidateFunc
+	// TestProvider invokes paid diagnostics only after explicit consent; tests inject offline clients.
+	// TestProvider 仅在明确确认后调用可能收费的诊断；测试注入离线客户端。
+	TestProvider func(context.Context, string, string, string, int, bool) (configbridge.ProviderTestResult, error)
 	// WaitHealthy checks runtime readiness after start; tests may supply a deterministic probe.
 	// WaitHealthy 在启动后检查运行时就绪状态；测试可提供确定性探测。
 	WaitHealthy func(context.Context, string, string) error
@@ -474,6 +477,15 @@ func New(options Options) (*Controller, error) {
 			return client.WaitHealthy(ctx)
 		}
 	}
+	if options.TestProvider == nil {
+		options.TestProvider = func(ctx context.Context, binaryPath, configRoot, purpose string, route int, confirmed bool) (configbridge.ProviderTestResult, error) {
+			client, err := configbridge.New(binaryPath, configRoot)
+			if err != nil {
+				return configbridge.ProviderTestResult{}, err
+			}
+			return client.TestProvider(ctx, purpose, route, confirmed)
+		}
+	}
 	if options.Clock == nil {
 		options.Clock = func() time.Time { return time.Now().UTC() }
 	}
@@ -641,6 +653,8 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 		err = c.install(ctx, request.Plan, events)
 	case tui.OperationValidate:
 		err = c.validate(ctx, request.Plan, events)
+	case tui.OperationTestProvider:
+		err = c.testProvider(ctx, request, events)
 	case tui.OperationService:
 		c.discardStaged()
 		err = c.serviceAction(ctx, request, events)
@@ -673,7 +687,7 @@ func (c *Controller) run(ctx context.Context, request tui.OperationRequest, even
 		c.emit(events, tui.OperationEvent{Kind: tui.OperationEventCancelled, Message: "Operation cancelled"})
 		return
 	}
-	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventFailed, Message: safeOperationError(err), Retryable: true})
+	c.emit(events, tui.OperationEvent{Kind: tui.OperationEventFailed, Message: safeOperationError(err), Retryable: request.Kind != tui.OperationTestProvider})
 }
 
 // probeSource checks only the selected source and discovers its latest authenticated release.

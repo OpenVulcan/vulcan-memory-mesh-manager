@@ -20,6 +20,9 @@ import (
 // Model is the Bubble Tea state machine for first install and installed management.
 // Model 是首次安装与已安装管理使用的 Bubble Tea 状态机。
 type Model struct {
+	// providerTest stores a diagnostic for the current candidate only, separately from static validation.
+	// providerTest 只保存当前候选配置的诊断，与静态校验分离。
+	providerTest *ProviderTestSummary
 	// editingInstalled stages the installed signed version before entering its configuration editor.
 	// editingInstalled 在进入配置编辑器前暂存当前已安装的签名版本。
 	editingInstalled bool
@@ -542,6 +545,8 @@ func (m *Model) handleEscape() (tea.Model, tea.Cmd) {
 		m.setScreen(ScreenPath)
 	case ScreenConfirm:
 		m.setScreen(ScreenConfigCheck)
+	case ScreenProviderTest:
+		m.setScreen(ScreenConfigCheck)
 	case ScreenRunning, ScreenDone, ScreenError:
 		if m.screen == ScreenError && m.operationScreen != ScreenError {
 			m.setScreen(m.operationScreen)
@@ -780,6 +785,8 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 		m.setScreen(ScreenConfigCheck)
 	case ScreenConfigCheck:
 		switch m.cursor {
+		case 4:
+			m.setScreen(ScreenProviderTest)
 		case 0:
 			return m, m.beginConfigFields("")
 		case 1:
@@ -803,6 +810,12 @@ func (m *Model) activateSelection() (tea.Model, tea.Cmd) {
 			return m, m.beginOperation(OperationRequest{Kind: OperationInstall, Plan: m.plan})
 		}
 		m.setScreen(ScreenConfigCheck)
+	case ScreenProviderTest:
+		if m.cursor == 0 {
+			m.setScreen(ScreenConfigCheck)
+			return m, nil
+		}
+		return m, m.beginOperation(OperationRequest{Kind: OperationTestProvider, Plan: m.plan, ProviderPurpose: providerPurposeAt(m.cursor - 1), ConfirmProviderNetwork: true})
 	case ScreenRunning:
 		return m.activateRunningSelection()
 	case ScreenUninstall:
@@ -1598,6 +1611,9 @@ func (m *Model) beginOperation(request OperationRequest) tea.Cmd {
 	if request.Kind == OperationValidate {
 		m.validation = ValidationSummary{}
 	}
+	if request.Kind == OperationTestProvider {
+		m.providerTest = nil
+	}
 	if m.controller == nil {
 		m.operationScreen = m.screen
 		m.setScreen(ScreenError)
@@ -1615,7 +1631,7 @@ func (m *Model) beginOperation(request OperationRequest) tea.Cmd {
 	m.operationKind = request.Kind
 	m.operationScreen = m.screen
 	m.lastRequest = request
-	m.retryable = true
+	m.retryable = request.Kind != OperationTestProvider
 	return func() tea.Msg {
 		events, err := m.controller.Start(ctx, request)
 		return operationStartedMsg{id: id, events: events, err: err}
@@ -1668,6 +1684,10 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 	}
 	if message.event.Snapshot != nil {
 		m.snapshot = *message.event.Snapshot
+	}
+	if message.event.ProviderTest != nil {
+		result := *message.event.ProviderTest
+		m.providerTest = &result
 	}
 	if message.event.Package != nil {
 		m.plan.Package = *message.event.Package
@@ -1799,6 +1819,8 @@ func (m *Model) routeCompletedOperation() {
 		} else {
 			m.setScreen(ScreenConfigCheck)
 		}
+	case OperationTestProvider:
+		m.setScreen(ScreenConfigCheck)
 	case OperationInstall:
 		m.snapshot.Installed = true
 		m.snapshot.Incomplete = false
@@ -1881,6 +1903,8 @@ func (m *Model) itemCount() int {
 	case ScreenPath:
 		return 2
 	case ScreenConfigCheck:
+		return 5
+	case ScreenProviderTest:
 		return 4
 	case ScreenConfirm:
 		return 2
@@ -1924,6 +1948,7 @@ func (m *Model) setScreen(screen Screen) {
 // invalidateValidation 将当前计划标记为已修改，只有重新通过 VMM 检查才能确认。
 func (m *Model) invalidateValidation() {
 	m.validation = ValidationSummary{}
+	m.providerTest = nil
 }
 
 // sourceAt returns a safe source selection for a possibly stale cursor.

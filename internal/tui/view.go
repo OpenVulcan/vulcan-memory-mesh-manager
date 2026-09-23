@@ -125,6 +125,8 @@ func (m *Model) renderPage() []string {
 		return m.renderPath()
 	case ScreenConfigCheck:
 		return m.renderConfigCheck()
+	case ScreenProviderTest:
+		return m.renderProviderTest()
 	case ScreenConfirm:
 		return m.renderConfirm()
 	case ScreenRunning:
@@ -133,6 +135,9 @@ func (m *Model) renderPage() []string {
 		return m.renderUninstall()
 	case ScreenError:
 		lines := []string{m.label("操作未完成，请选择后续动作。", "Operation did not complete; choose what to do next.")}
+		if m.operationKind == OperationTestProvider && m.providerTest != nil {
+			lines = append(lines, m.providerTestText(*m.providerTest))
+		}
 		if m.retryable {
 			lines = append(lines, m.option(0, m.text(i18n.KeyActionRetry, nil)))
 			lines = append(lines, m.option(1, m.text(i18n.KeyActionBack, nil)))
@@ -601,11 +606,15 @@ func (m *Model) renderConfigCheck() []string {
 	for _, diagnostic := range m.validation.Errors {
 		lines = append(lines, "  "+diagnostic)
 	}
+	if m.providerTest != nil {
+		lines = append(lines, m.providerTestText(*m.providerTest))
+	}
 	lines = append(lines,
 		m.option(0, m.label("打开全部高级配置", "Open all advanced fields")),
 		m.option(1, m.label("调用 VMM 校验", "Validate with VMM")),
 		m.option(2, m.label("继续到执行确认", "Continue to execution confirmation")),
 		m.option(3, m.label("编辑提示词、PII 与噪声规则文件", "Edit prompt, PII, and noise rule files")),
+		m.option(4, m.label("可选供应商在线测试（可能收费）", "Optional online provider test (charges may apply)")),
 	)
 	return lines
 }

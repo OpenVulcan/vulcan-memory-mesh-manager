@@ -395,6 +395,9 @@ func decodeStrictDocument(data []byte, destination any, required map[string]bool
 // requireObjectArray 确认根对象中的集合成员是数组，而不是 null。
 func requireObjectArray(root map[string]json.RawMessage, destination any) error {
 	switch destination.(type) {
+	case *ProviderTestResult:
+		// This flat response has no object arrays; strict decoding below validates all fields.
+		// 此平面结果不含对象数组；后续严格解码会验证全部字段。
 	case *EffectiveConfig:
 		var config map[string]json.RawMessage
 		if err := json.Unmarshal(root["config"], &config); err != nil || len(config) == 0 {
