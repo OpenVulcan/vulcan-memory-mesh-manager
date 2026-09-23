@@ -38,6 +38,21 @@ jobs:
         run: go vet ./...
       - name: Build native manager
         run: go build ./cmd/vmmm
+      - name: Verify real Windows PATH integration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VMMM_TEST_NATIVE_PATH: "1"
+        run: |
+          $env:VMMM_TEST_MANAGER_BINARY = Join-Path $PWD 'vmmm.exe'
+          go test ./internal/pathctl -run '^TestNativePATHRoundTrip$' -count=1
+      - name: Verify real Unix system command integration
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sudo -n env GITHUB_ACTIONS=true VMMM_TEST_NATIVE_PATH=1 \
+            VMMM_TEST_MANAGER_BINARY="$PWD/vmmm" \
+            "$(command -v go)" test ./internal/pathctl -run '^TestNativePATHRoundTrip$' -count=1
       - name: Release and bootstrap tests
         if: runner.os == 'Linux'
         run: |

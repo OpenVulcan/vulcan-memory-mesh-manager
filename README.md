@@ -68,4 +68,6 @@ Linux/macOS 选择服务账户后，管理器会在进程停止时调整所登�
 
 开发需要 Go 1.25：`go build -o vmmm.exe ./cmd/vmmm`、`go test ./...`。开发程序的 TUI 首装仍需要可用的正式签名 Release。正式流程从精确标签提交构建五平台单文件资产，为管理器和 VMM 分别使用独立 Ed25519 发布密钥。当前私钥只保存在各仓库 GitHub Actions Secrets；固定公钥与用途见 [发行公钥说明](docs/release-public-keys.md)。
 
+五平台 CI 另有显式启用的真实 PATH 验收：Windows 使用执行器当前用户注册表及环境广播，Linux/macOS 使用管理员拥有的 `/usr/local/bin/vmmm` 链接；均核对命令解析到刚构建的文件、执行版本命令并移除入口。测试完成后恢复原注册表或清理所拥有的链接。此验收只在明确启用的临时 GitHub 执行器运行，普通本地测试会跳过，不修改本机 PATH。
+
 下载源预置 GitHub 官方、`ghproxy.net`、`gh-proxy.org`、`ghfast.top`。代理只传输 GitHub Release URL，不成为发行身份；其可用性随地区和时间变化，TUI 会实时检测。样本与限制见 [下载源调研](docs/DOWNLOAD_SOURCES_CN.md)。完整设计和执行记录见 [安装器实施计划](docs/plan/20260923-01-VMMM_INSTALLER_IMPLEMENTATION.md)。
