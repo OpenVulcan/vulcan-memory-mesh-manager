@@ -170,7 +170,7 @@ def generate(
         if not template_path.is_file():
             raise BootstrapGenerationError(f"missing template: {template_path}")
         rendered = render_template(
-            template_path.read_text(encoding="utf-8"), table
+            template_path.read_text(encoding="utf-8-sig"), table
         )
         mode = stat.S_IMODE(template_path.stat().st_mode)
         if filename == "install.sh":

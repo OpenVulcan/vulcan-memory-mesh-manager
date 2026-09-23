@@ -1,4 +1,4 @@
-# This script downloads one VMMM manager release fixed by an injected official SHA-256.
+﻿# This script downloads one VMMM manager release fixed by an injected official SHA-256.
 # 此脚本只下载由注入的官方 SHA-256 固定的 VMMM 管理器发行物。
 
 [CmdletBinding()]

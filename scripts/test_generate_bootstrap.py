@@ -88,6 +88,7 @@ class BootstrapGeneratorTests(unittest.TestCase):
             )
             self.assertTrue(ps1.is_file())
             self.assertTrue(sh.is_file())
+            self.assertTrue((SCRIPT_DIR / "install.ps1").read_bytes().startswith(b"\xef\xbb\xbf"))
             self.assertTrue(ps1.read_bytes().startswith(b"\xef\xbb\xbf"))
             self.assertIn("vmmm-v0.2.0-linux-x64", sh.read_text(encoding="utf-8"))
             self.assertNotIn("__VMMM_", ps1.read_text(encoding="utf-8"))
@@ -106,6 +107,16 @@ class BootstrapGeneratorTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("unsupported source", result.stdout + result.stderr)
+                template_result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-File", str(SCRIPT_DIR / "install.ps1")],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+                self.assertNotEqual(template_result.returncode, 0)
+                self.assertIn("no valid injected release version", template_result.stdout + template_result.stderr)
             self.assertIn("__VMMM_", (SCRIPT_DIR / "install.sh").read_text(encoding="utf-8"))
 
     def test_generation_cannot_overwrite_template_directory(self) -> None:
