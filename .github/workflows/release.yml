@@ -1,0 +1,598 @@
+# Build and verify the standalone VMMM manager release before leaving it as a draft.
+# 构建并回验独立 VMMM 管理器发行版，然后保持为草稿。
+name: VMMM release
+
+on:
+  push:
+    branches: [codex/github-release-signing]
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing or new semantic release tag, for example v0.1.0"
+        required: true
+        type: string
+        default: v0.1.0
+      verify_only:
+        description: "Build the workflow commit without creating tags or releases"
+        type: boolean
+        default: true
+      commit:
+        description: "Commit to bind when creating a new tag; empty uses the workflow commit"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vmmm-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release identity
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      commit: ${{ steps.identity.outputs.commit }}
+      tag_exists: ${{ steps.identity.outputs.tag_exists }}
+      verify_only: ${{ steps.identity.outputs.verify_only }}
+    steps:
+      - name: Check out repository history for tag resolution
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve immutable release identity
+        id: identity
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.ref == 'refs/heads/codex/github-release-signing' && 'v0.1.0' || inputs.tag || github.ref_name }}
+          EVENT_COMMIT: ${{ github.sha }}
+          EVENT_COMMIT_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          VERIFY_ONLY: ${{ github.ref == 'refs/heads/codex/github-release-signing' || inputs.verify_only == true }}
+        run: |
+          set -euo pipefail
+
+          # Verification builds the workflow commit and cannot create a tag or release.
+          # 验证模式构建工作流提交，不允许创建标签或发行版本。
+          echo "verify_only=$VERIFY_ONLY" >> "$GITHUB_OUTPUT"
+          if [[ "$VERIFY_ONLY" == true ]]; then
+            [[ "$EVENT_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
+            [[ -z "$EVENT_COMMIT_INPUT" || "$EVENT_COMMIT_INPUT" == "$EVENT_COMMIT" ]]
+            echo "tag=$EVENT_TAG" >> "$GITHUB_OUTPUT"
+            echo "commit=$EVENT_COMMIT" >> "$GITHUB_OUTPUT"
+            echo 'tag_exists=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Resolve annotated tags to their peeled commit and lightweight tags to their direct commit.
+          # 将附注标签解析到剥离后的提交，并将轻量标签解析到其直接提交。
+          resolve_remote_tag() {
+            local tag="$1"
+            local listing
+            listing="$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}")" || {
+              echo "unable to query the remote tag: ${tag}" >&2
+              return 2
+            }
+            local direct=""
+            local peeled=""
+            local object_id ref
+            while IFS=$'\t' read -r object_id ref; do
+              [[ -n "$object_id" && -n "$ref" ]] || continue
+              [[ "$object_id" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "remote tag returned a non-SHA-1 object: ${ref}" >&2
+                return 1
+              }
+              case "$ref" in
+                "refs/tags/${tag}^{}") peeled="$object_id" ;;
+                "refs/tags/${tag}") direct="$object_id" ;;
+              esac
+            done <<< "$listing"
+            if [[ -n "$peeled" ]]; then
+              printf '%s\n' "$peeled"
+            else
+              printf '%s\n' "$direct"
+            fi
+          }
+
+          # Ensure a selected commit is present locally so the build cannot silently use another ref.
+          # 确保选定提交在本地可用，使构建不会静默改用其他引用。
+          ensure_commit_available() {
+            local commit="$1"
+            if ! git cat-file -e "${commit}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$commit" >/dev/null
+            fi
+            git cat-file -e "${commit}^{commit}" 2>/dev/null || {
+              echo "selected commit is not available as a commit: ${commit}" >&2
+              return 1
+            }
+          }
+
+          [[ "$EVENT_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
+            echo "release tag is not a semantic version: $EVENT_TAG" >&2
+            exit 1
+          }
+
+          if [[ -n "$EVENT_COMMIT_INPUT" ]]; then
+            [[ "$EVENT_COMMIT_INPUT" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "manual commit is not a complete lowercase SHA-1" >&2
+              exit 1
+            }
+          fi
+
+          remote_tag_commit="$(resolve_remote_tag "$EVENT_TAG")"
+          tag_exists=false
+          if [[ -n "$remote_tag_commit" ]]; then
+            [[ "$remote_tag_commit" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "remote tag did not resolve to a complete lowercase SHA-1" >&2
+              exit 1
+            }
+            selected_commit="$remote_tag_commit"
+            tag_exists=true
+            if [[ -n "$EVENT_COMMIT_INPUT" && "$EVENT_COMMIT_INPUT" != "$selected_commit" ]]; then
+              echo "manual commit does not match the existing tag's peeled commit" >&2
+              exit 1
+            fi
+          else
+            [[ "$EVENT_NAME" == "workflow_dispatch" ]] || {
+              echo "a tag push must resolve to an existing remote tag" >&2
+              exit 1
+            }
+            selected_commit="${EVENT_COMMIT_INPUT:-$EVENT_COMMIT}"
+            [[ "$selected_commit" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "selected commit is not a complete lowercase SHA-1" >&2
+              exit 1
+            }
+          fi
+          ensure_commit_available "$selected_commit"
+          git merge-base --is-ancestor "$selected_commit" origin/main || {
+            echo "release commit must be on main history" >&2
+            exit 1
+          }
+          {
+            echo "tag=$EVENT_TAG"
+            echo "commit=$selected_commit"
+            echo "tag_exists=$tag_exists"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: validate
+    runs-on: ${{ matrix.goos == 'windows' && 'windows-2025' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    concurrency:
+      group: release-build-${{ matrix.platform }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            goos: windows
+            goarch: amd64
+            input: vmmm-windows-x64.exe
+          - platform: linux-x64
+            goos: linux
+            goarch: amd64
+            input: vmmm-linux-x64
+          - platform: linux-arm64
+            goos: linux
+            goarch: arm64
+            input: vmmm-linux-arm64
+          - platform: macos-intel
+            goos: darwin
+            goarch: amd64
+            input: vmmm-macos-intel
+          - platform: macos-arm64
+            goos: darwin
+            goarch: arm64
+            input: vmmm-macos-arm64
+    env:
+      CGO_ENABLED: "0"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test the native Linux build
+        if: matrix.platform == 'linux-x64'
+        run: go test ./...
+
+      - name: Build one manager executable
+        shell: bash
+        env:
+          RELEASE_INPUT: ${{ matrix.input }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          go build -trimpath -buildvcs=true \
+            -ldflags "-X main.version=${RELEASE_TAG}" \
+            -o "$RUNNER_TEMP/$RELEASE_INPUT" ./cmd/vmmm
+          test -s "$RUNNER_TEMP/$RELEASE_INPUT"
+
+      - name: Verify embedded release identity
+        shell: bash
+        env:
+          RELEASE_INPUT: ${{ matrix.input }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          # Go build metadata carries the exact source commit for every target executable.
+          # Go 构建元数据为每个平台可执行文件携带精确源提交。
+          build_info="$(go version -m "$RUNNER_TEMP/$RELEASE_INPUT")"
+          grep -Fq "vcs.revision=${RELEASE_COMMIT}" <<< "$build_info" || {
+            echo "binary VCS revision does not match the signed release commit" >&2
+            exit 1
+          }
+
+          if [[ "${{ matrix.platform }}" == "linux-x64" ]]; then
+            # Run the native Linux binary through its non-interactive JSON version command.
+            # 运行本机 Linux 二进制的非交互 JSON 版本命令。
+            version_json="$("$RUNNER_TEMP/$RELEASE_INPUT" --json version)"
+            RELEASE_VERSION_JSON="$version_json" RELEASE_TAG="$RELEASE_TAG" python - <<'PY'
+          import json
+          import os
+
+          value = json.loads(os.environ["RELEASE_VERSION_JSON"])
+          expected = os.environ["RELEASE_TAG"]
+          if value.get("product") != "vmmm" or value.get("version") != expected:
+              raise SystemExit(f"native version output does not match release tag: {value!r}")
+          PY
+          else
+            # Cross-target binaries cannot run on this Linux host; verify the linked tag literal.
+            # 交叉目标二进制无法在当前 Linux 主机运行，改为验证链接进去的标签字面量。
+            RELEASE_BINARY="$RUNNER_TEMP/$RELEASE_INPUT" RELEASE_TAG="$RELEASE_TAG" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          binary = Path(os.environ["RELEASE_BINARY"]).read_bytes()
+          tag = os.environ["RELEASE_TAG"].encode("ascii")
+          if tag not in binary:
+              raise SystemExit("cross-target binary does not contain the linked release tag")
+          PY
+          fi
+
+      - name: Install pinned SimplySign Desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/sign_release.ps1 -Phase Install -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence"
+
+      - name: Sign and verify the Windows manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CERTUM_TOTP_EMAIL: ${{ secrets.CERTUM_TOTP_EMAIL }}
+          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
+          RELEASE_INPUT: ${{ matrix.input }}
+        run: ./scripts/sign_release.ps1 -Phase Sign -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence" -Files (Join-Path $env:RUNNER_TEMP $env:RELEASE_INPUT)
+
+      - name: Upload one manager executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: manager-${{ matrix.platform }}
+          path: ${{ runner.temp }}/${{ matrix.input }}
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Package manager assets
+    needs:
+      - validate
+      - build
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 1
+
+      - name: Download all five manager binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: manager-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/vmmm-input
+
+      - name: Create manifest and release directory
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          python scripts/package_release.py package \
+            --input-dir "$RUNNER_TEMP/vmmm-input" \
+            --output-dir "$RUNNER_TEMP/vmmm-release" \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT"
+
+      - name: Recheck the packaged Windows signature without cloud credentials
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: ./scripts/sign_release.ps1 -Phase Verify -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence" -Files "$env:RUNNER_TEMP/vmmm-release/vmmm-$env:RELEASE_TAG-windows-x64.exe"
+
+      - name: Upload unsigned release directory for signing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vmmm-release-unsigned
+          path: ${{ runner.temp }}/vmmm-release
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-draft-verify:
+    name: Sign, create draft, and verify remote assets
+    needs:
+      - validate
+      - package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # This public key is also embedded in the manager trust store.
+      # 此公钥同时内置于管理器信任存储中。
+      VMMM_TRUSTED_ED25519_PUBLIC_KEY: "S4zmW0F/BJA7MbvupEdD1jYuaA2tUlBfFRsuDBVjge0="
+      # This key ID must match the signed envelope and the manager trust store.
+      # 此密钥 ID 必须与签名封装及管理器信任存储一致。
+      VMMM_TRUSTED_ED25519_KEY_ID: "vmmm-2026-09-23-01"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 1
+
+      - name: Set up Go for standard-library signing
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download unsigned release directory
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vmmm-release-unsigned
+          path: ${{ runner.temp }}/vmmm-release
+
+      - name: Sign final Linux executables with the pinned OpenPGP key
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: python scripts/release_gpg.py sign "$RUNNER_TEMP/vmmm-release/vmmm-$RELEASE_TAG-linux-x64" "$RUNNER_TEMP/vmmm-release/vmmm-$RELEASE_TAG-linux-arm64"
+
+      - name: Sign manifest from GitHub secret and verify locally
+        shell: bash
+        env:
+          VMMM_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.VMMM_RELEASE_ED25519_PRIVATE_KEY }}
+          VMMM_RELEASE_ED25519_KEY_ID: ${{ secrets.VMMM_RELEASE_ED25519_KEY_ID }}
+        run: |
+          set -euo pipefail
+          [[ -n "${VMMM_RELEASE_ED25519_PRIVATE_KEY:-}" ]] || {
+            echo "VMMM_RELEASE_ED25519_PRIVATE_KEY is required; refusing an unsigned release" >&2
+            exit 1
+          }
+          [[ -n "${VMMM_RELEASE_ED25519_KEY_ID:-}" ]] || {
+            echo "VMMM_RELEASE_ED25519_KEY_ID is required; refusing an unidentified release" >&2
+            exit 1
+          }
+          [[ "$VMMM_RELEASE_ED25519_KEY_ID" == "$VMMM_TRUSTED_ED25519_KEY_ID" ]] || {
+            echo "release key ID does not match the fixed manager trust root" >&2
+            exit 1
+          }
+          derived_public_key="$(go run ./scripts/sign_manifest.go public)"
+          [[ "$derived_public_key" == "$VMMM_TRUSTED_ED25519_PUBLIC_KEY" ]] || {
+            echo "release Secret does not derive the fixed manager trust-root public key" >&2
+            exit 1
+          }
+          go run ./scripts/sign_manifest.go sign \
+            --manifest "$RUNNER_TEMP/vmmm-release/manifest.json" \
+            --signature "$RUNNER_TEMP/vmmm-release/manifest.sig"
+          VMMM_RELEASE_ED25519_PUBLIC_KEY="$VMMM_TRUSTED_ED25519_PUBLIC_KEY" \
+            go run ./scripts/sign_manifest.go verify \
+              --manifest "$RUNNER_TEMP/vmmm-release/manifest.json" \
+              --signature "$RUNNER_TEMP/vmmm-release/manifest.sig"
+
+      - name: Render bootstrap scripts from verified asset digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from scripts.generate_bootstrap import generate
+
+          release_dir = Path(os.environ["RUNNER_TEMP"]) / "vmmm-release"
+          manifest = json.loads((release_dir / "manifest.json").read_text(encoding="utf-8"))
+          digests = {entry["platform"]: entry["sha256"] for entry in manifest["artifacts"]}
+          generate(
+              version=manifest["tag"],
+              digests=digests,
+              template_dir=Path("scripts"),
+              output_dir=release_dir,
+          )
+          PY
+          test -s "$RUNNER_TEMP/vmmm-release/install.ps1"
+          test -s "$RUNNER_TEMP/vmmm-release/install.sh"
+          python scripts/package_release.py verify --release-dir "$RUNNER_TEMP/vmmm-release"
+          VMMM_RELEASE_ED25519_PUBLIC_KEY="$VMMM_TRUSTED_ED25519_PUBLIC_KEY" \
+            go run ./scripts/sign_manifest.go verify \
+            --manifest "$RUNNER_TEMP/vmmm-release/manifest.json" \
+            --signature "$RUNNER_TEMP/vmmm-release/manifest.sig"
+
+      - name: Upload verified production assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vmmm-release-verified
+          path: ${{ runner.temp }}/vmmm-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Bind and verify release tag identity
+        if: needs.validate.outputs.verify_only != 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          TAG_WAS_PRESENT: ${{ needs.validate.outputs.tag_exists }}
+        run: |
+          set -euo pipefail
+
+          # Re-read the remote tag immediately before release creation to close the check/use race.
+          # 在创建发行版前立即重新读取远程标签，以关闭检查与使用之间的竞态窗口。
+          resolve_remote_tag() {
+            local tag="$1"
+            local listing
+            listing="$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}")" || {
+              echo "unable to query the remote tag: ${tag}" >&2
+              return 2
+            }
+            local direct=""
+            local peeled=""
+            local object_id ref
+            while IFS=$'\t' read -r object_id ref; do
+              [[ -n "$object_id" && -n "$ref" ]] || continue
+              [[ "$object_id" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "remote tag returned a non-SHA-1 object: ${ref}" >&2
+                return 1
+              }
+              case "$ref" in
+                "refs/tags/${tag}^{}") peeled="$object_id" ;;
+                "refs/tags/${tag}") direct="$object_id" ;;
+              esac
+            done <<< "$listing"
+            if [[ -n "$peeled" ]]; then
+              printf '%s\n' "$peeled"
+            else
+              printf '%s\n' "$direct"
+            fi
+          }
+
+          manifest_commit="$(RELEASE_MANIFEST="$RUNNER_TEMP/vmmm-release/manifest.json" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          value = json.loads(Path(os.environ["RELEASE_MANIFEST"]).read_text(encoding="utf-8"))
+          print(value["commit"])
+          PY
+          )"
+          [[ "$manifest_commit" == "$RELEASE_COMMIT" ]] || {
+            echo "signed manifest commit does not match the selected release commit" >&2
+            exit 1
+          }
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release already exists; refusing to overwrite it: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          current_tag_commit="$(resolve_remote_tag "$RELEASE_TAG")"
+          if [[ "$TAG_WAS_PRESENT" == "true" ]]; then
+            [[ -n "$current_tag_commit" ]] || {
+              echo "the existing release tag disappeared before draft creation" >&2
+              exit 1
+            }
+            [[ "$current_tag_commit" == "$RELEASE_COMMIT" ]] || {
+              echo "the existing release tag moved to another commit" >&2
+              exit 1
+            }
+          else
+            [[ -z "$current_tag_commit" ]] || {
+              echo "release tag appeared during validation; refusing the race" >&2
+              exit 1
+            }
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/tags/${RELEASE_TAG}" \
+              -f "sha=${RELEASE_COMMIT}" >/dev/null
+            current_tag_commit="$(resolve_remote_tag "$RELEASE_TAG")"
+            [[ "$current_tag_commit" == "$RELEASE_COMMIT" ]] || {
+              echo "new release tag was not bound to the selected commit" >&2
+              exit 1
+            }
+          fi
+
+      - name: Create draft release and upload only manager assets
+        if: needs.validate.outputs.verify_only != 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          This release is intentionally created as a draft.
+
+          Windows binaries carry verified Certum Authenticode signatures and RFC 3161 timestamps. Linux binaries have detached OpenPGP signatures. The five-platform manifest is signed with the VMMM Ed25519 release key. macOS binaries are not code-signed.
+          EOF
+          gh release create "$RELEASE_TAG" \
+            --draft \
+            --verify-tag \
+            --title "VMMM $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            "$RUNNER_TEMP/vmmm-release"/*
+
+      - name: Download the draft again and verify every uploaded asset
+        if: needs.validate.outputs.verify_only != 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --json isDraft --jq 'if .isDraft then empty else error("release is not a draft") end'
+          gh release view "$RELEASE_TAG" --json assets > "$RUNNER_TEMP/release-assets.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from scripts.package_release import BOOTSTRAP_NAMES, MANIFEST_NAME, SIGNATURE_NAME, validate_manifest
+
+          release_dir = Path(os.environ["RUNNER_TEMP"]) / "vmmm-release"
+          manifest = validate_manifest(json.loads((release_dir / MANIFEST_NAME).read_text(encoding="utf-8")))
+          required = {MANIFEST_NAME, SIGNATURE_NAME} | {entry["filename"] for entry in manifest["artifacts"]}
+          expected = required | BOOTSTRAP_NAMES | {entry["filename"] + ".asc" for entry in manifest["artifacts"] if entry["platform"].startswith("linux-")}
+          release_info = json.loads((Path(os.environ["RUNNER_TEMP"]) / "release-assets.json").read_text(encoding="utf-8"))
+          actual = {asset["name"] for asset in release_info["assets"]}
+          if actual != expected:
+              raise SystemExit(f"draft release asset set is not exact: expected={sorted(expected)!r} actual={sorted(actual)!r}")
+          PY
+          verify_dir="$RUNNER_TEMP/vmmm-release-remote"
+          mkdir -p "$verify_dir"
+          gh release download "$RELEASE_TAG" \
+            --pattern 'vmmm-*' \
+            --pattern 'manifest.json' \
+            --pattern 'manifest.sig' \
+            --pattern 'install.ps1' \
+            --pattern 'install.sh' \
+            --dir "$verify_dir"
+          test -s "$verify_dir/install.ps1"
+          test -s "$verify_dir/install.sh"
+          cmp --silent "$RUNNER_TEMP/vmmm-release/install.ps1" "$verify_dir/install.ps1"
+          cmp --silent "$RUNNER_TEMP/vmmm-release/install.sh" "$verify_dir/install.sh"
+          python scripts/package_release.py verify --release-dir "$verify_dir"
+          python scripts/release_gpg.py verify "$verify_dir/vmmm-$RELEASE_TAG-linux-x64" "$verify_dir/vmmm-$RELEASE_TAG-linux-arm64"
+          diff -r "$RUNNER_TEMP/vmmm-release" "$verify_dir"
+          VMMM_RELEASE_ED25519_PUBLIC_KEY="$VMMM_TRUSTED_ED25519_PUBLIC_KEY" \
+            go run ./scripts/sign_manifest.go verify \
+            --manifest "$verify_dir/manifest.json" \
+            --signature "$verify_dir/manifest.sig"
