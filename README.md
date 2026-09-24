@@ -93,4 +93,4 @@ PATH 登记写入失败且原生命令入口未能撤销时，管理器会保留
 
 五平台 CI 另有显式启用的真实 PATH 验收：Windows 使用执行器当前用户注册表及环境广播，Linux 使用管理员拥有的 `/usr/local/bin/vmmm` 链接，macOS 使用 `/private/etc/paths.d/vmmm` 并通过真实登录 shell 检查；均核对命令解析到刚构建的文件、执行版本命令并移除入口。Linux 执行器若将共享命令目录设为可写，先验证拒绝，再临时设定受控权限并恢复。测试完成后恢复原注册表或清理所拥有的入口。此验收只在明确启用的临时 GitHub 执行器运行，普通本地测试会跳过，不修改本机 PATH。
 
-下载源预置 GitHub 官方、`ghproxy.net`、`gh-proxy.org`、`ghfast.top`。代理只传输 GitHub Release URL，不成为发行身份；其可用性随地区和时间变化，TUI 会实时检测。样本与限制见 [下载源调研](docs/DOWNLOAD_SOURCES_CN.md)。完整设计和执行记录见 [安装器实施计划](docs/plan/20260923-01-VMMM_INSTALLER_IMPLEMENTATION.md)。
+下载源预置 GitHub 官方、`ghproxy.net`、`gh-proxy.org`、`ghfast.top`。代理只传输 GitHub Release URL，不成为发行身份；其可用性随地区和时间变化，TUI 会实时检测。样本与限制见 [下载源调研](docs/DOWNLOAD_SOURCES_CN.md)。完整设计和执行记录见 [安装器实施记录](docs/completed/20260923/01-VMMM_INSTALLER_IMPLEMENTATION.md)。
