@@ -44,7 +44,11 @@ func (c *testController) Start(_ context.Context, request OperationRequest) (<-c
 	stream := make(chan OperationEvent, 1)
 	switch request.Kind {
 	case OperationProbeSource:
-		stream <- OperationEvent{Kind: OperationEventCompleted, Versions: []VersionOption{{Tag: "v0.1.0", Available: true}}}
+		// The real controller reports only the probed source, rather than the whole source catalog.
+		// 真实控制器仅返回被探测的下载源，不返回整个来源目录。
+		checked := request.Source
+		checked.Available = true
+		stream <- OperationEvent{Kind: OperationEventCompleted, Sources: []SourceOption{checked}, Versions: []VersionOption{{Tag: "v0.1.0", Available: true}}}
 	case OperationStagePackage:
 		stream <- OperationEvent{Kind: OperationEventCompleted, Package: &StagedPackage{Verified: true, Version: "v0.1.0", Platform: "windows-x64", StorageModes: []StorageMode{StorageNative, StorageSplit, StorageController, StoragePostgreSQL, StorageParadeDB}}}
 	case OperationValidate:
@@ -571,6 +575,9 @@ func TestCustomSourceIsProbedAndReused(t *testing.T) {
 	}
 	if controller.requests[0].Source.Source.ID != model.selectedSource.Source.ID {
 		t.Fatalf("probe source ID = %q, selected ID = %q", controller.requests[0].Source.Source.ID, model.selectedSource.Source.ID)
+	}
+	if len(model.sources) != len(DefaultSourceOptions())+1 || !model.selectedSource.Available {
+		t.Fatal("custom probe removed built-in sources or discarded its checked state")
 	}
 }
 

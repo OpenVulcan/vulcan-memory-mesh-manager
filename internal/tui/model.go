@@ -1787,12 +1787,24 @@ func (m *Model) updateOperationEvent(message operationEventMsg) (tea.Model, tea.
 	}
 	if len(message.event.Sources) > 0 {
 		selectedID := m.selectedSource.Source.ID
-		m.sources = append([]SourceOption(nil), message.event.Sources...)
-		for _, source := range m.sources {
+		// Probes return only checked choices; keep unprobed alternatives and match stable built-in or derived custom IDs.
+		// 探测只返回已检查选项；保留未探测的替代来源，并按内置或自定义派生的稳定 ID 匹配。
+		for _, source := range message.event.Sources {
+			index := -1
+			for candidate := range m.sources {
+				if m.sources[candidate].Source.ID == source.Source.ID {
+					index = candidate
+					break
+				}
+			}
+			if index >= 0 {
+				m.sources[index] = source
+			} else {
+				m.sources = append(m.sources, source)
+			}
 			if source.Source.ID == selectedID {
 				m.selectedSource = source
 				m.plan.Source = source
-				break
 			}
 		}
 	}

@@ -858,8 +858,8 @@ type OperationEvent struct {
 	// Package carries verified staging metadata after package verification.
 	// Package 在安装包校验后携带已验证的暂存元数据。
 	Package *StagedPackage
-	// Sources carries source probe or source list results.
-	// Sources 携带源检测或源列表结果。
+	// Sources carries partial probe results keyed by stable source ID; omitted choices stay available in the menu.
+	// Sources 按稳定来源 ID 携带局部探测结果；未包含的选项继续保留在菜单中。
 	Sources []SourceOption
 	// Versions carries release version results.
 	// Versions 携带发行版本结果。
