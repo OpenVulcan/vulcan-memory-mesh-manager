@@ -332,7 +332,7 @@ try {
     $platformId = Get-PlatformId
     $assetName = $script:VMMMAssetNames[$platformId]
     $expectedSHA256 = $script:VMMMSHA256[$platformId].ToLowerInvariant()
-    $assetPath = "https://$script:VMMMRepository/releases/download/$script:VMMMVersion/$assetName"
+    $assetPath = "https://github.com/$script:VMMMRepository/releases/download/$script:VMMMVersion/$assetName"
     $downloadUrl = "$prefix$assetPath"
     if ($downloadUrl -notmatch '^https://') {
         Stop-Bootstrap 'download URL is not HTTPS / 下载地址不是 HTTPS'

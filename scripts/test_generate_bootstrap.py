@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -130,6 +132,65 @@ class BootstrapGeneratorTests(unittest.TestCase):
                 template_dir=SCRIPT_DIR,
                 output_dir=SCRIPT_DIR,
             )
+
+    def test_generated_powershell_resolves_real_github_asset_urls(self) -> None:
+        """Evaluate the generated script's actual URL assignments for every supported source without downloading.
+        不进行下载，直接执行生成脚本的真实 URL 赋值，覆盖每种受支持来源。
+        """
+        engines = [engine for name in ("pwsh", "powershell.exe") if (engine := shutil.which(name))]
+        if not engines:
+            self.skipTest("PowerShell is required for the generated URL contract")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ps1, _ = MODULE.generate(version="v0.2.0", digests=DIGESTS, template_dir=SCRIPT_DIR, output_dir=root / "release")
+            harness = root / "inspect-url.ps1"
+            # Parse trusted source and execute only declarations plus the two actual URL assignments.
+            # 解析受信源码，仅执行声明及两个实际 URL 赋值，不触发下载、终端或清理操作。
+            harness.write_text(r'''
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$tree = [System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$tokens, [ref]$errors)
+if ($errors.Count -ne 0) { throw 'Generated script is not valid PowerShell' }
+foreach ($statement in $tree.EndBlock.Statements) {
+    if ($statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) {
+        Invoke-Expression $statement.Extent.Text
+    } elseif ($statement -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+              $statement.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+              $statement.Left.VariablePath.UserPath.StartsWith('script:VMMM')) {
+        Invoke-Expression $statement.Extent.Text
+    }
+}
+$assignments = @($tree.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+    $node.Left.VariablePath.UserPath -in @('assetPath', 'downloadUrl')
+}, $true))
+if ($assignments.Count -ne 2) { throw 'Expected exactly two production URL assignments' }
+$assetName = $script:VMMMAssetNames['windows-x64']
+$urls = @{}
+foreach ($source in @('official', 'ghproxy-net', 'gh-proxy-org', 'ghfast-top', 'custom')) {
+    $customPrefix = ''
+    if ($source -eq 'custom') { $customPrefix = 'https://mirror.example/github/' }
+    $prefix = Get-SourcePrefix -SelectedSource $source -SelectedPrefix $customPrefix
+    foreach ($assignment in $assignments) { Invoke-Expression $assignment.Extent.Text }
+    $urls[$source] = $downloadUrl
+}
+$urls | ConvertTo-Json -Compress
+''', encoding="utf-8-sig")
+            official = "https://github.com/OpenVulcan/vulcan-memory-mesh-manager/releases/download/v0.2.0/vmmm-v0.2.0-windows-x64.exe"
+            expected = {
+                "official": official,
+                "ghproxy-net": "https://ghproxy.net/" + official,
+                "gh-proxy-org": "https://gh-proxy.org/" + official,
+                "ghfast-top": "https://ghfast.top/" + official,
+                "custom": "https://mirror.example/github/" + official,
+            }
+            for engine in engines:
+                with self.subTest(engine=engine):
+                    result = subprocess.run([engine, "-NoProfile", "-File", str(harness), str(ps1)], capture_output=True, encoding="utf-8", errors="replace", timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(json.loads(result.stdout), expected)
 
     def test_templates_are_manager_only_and_tty_guarded(self) -> None:
         """Templates only target the manager repository and require a terminal.
