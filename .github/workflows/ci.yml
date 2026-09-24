@@ -77,5 +77,5 @@ jobs:
       - name: Release and bootstrap tests
         if: runner.os == 'Linux'
         run: |
-          python3 -m unittest scripts/test_package_release.py scripts/test_generate_bootstrap.py scripts/test_release_workflow.py scripts/test_sign_manifest.py -v
+          python3 -m unittest scripts/test_package_release.py scripts/test_generate_bootstrap.py scripts/test_release_workflow.py scripts/test_sign_manifest.py scripts/test_release_gpg.py -v
           bash -n scripts/install.sh

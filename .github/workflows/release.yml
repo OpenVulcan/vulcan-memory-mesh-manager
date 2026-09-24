@@ -4,6 +4,7 @@ name: VMMM release
 
 on:
   push:
+    branches: [codex/github-release-signing]
     tags:
       - "v*"
   workflow_dispatch:
@@ -12,6 +13,11 @@ on:
         description: "Existing or new semantic release tag, for example v0.1.0"
         required: true
         type: string
+        default: v0.1.0
+      verify_only:
+        description: "Build the workflow commit without creating tags or releases"
+        type: boolean
+        default: true
       commit:
         description: "Commit to bind when creating a new tag; empty uses the workflow commit"
         required: false
@@ -19,7 +25,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: vmmm-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -33,6 +39,7 @@ jobs:
       tag: ${{ steps.identity.outputs.tag }}
       commit: ${{ steps.identity.outputs.commit }}
       tag_exists: ${{ steps.identity.outputs.tag_exists }}
+      verify_only: ${{ steps.identity.outputs.verify_only }}
     steps:
       - name: Check out repository history for tag resolution
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -43,12 +50,25 @@ jobs:
         id: identity
         shell: bash
         env:
-          EVENT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          EVENT_TAG: ${{ github.ref == 'refs/heads/codex/github-release-signing' && 'v0.1.0' || inputs.tag || github.ref_name }}
           EVENT_COMMIT: ${{ github.sha }}
           EVENT_COMMIT_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || '' }}
           EVENT_NAME: ${{ github.event_name }}
+          VERIFY_ONLY: ${{ github.ref == 'refs/heads/codex/github-release-signing' || inputs.verify_only == true }}
         run: |
           set -euo pipefail
+
+          # Verification builds the workflow commit and cannot create a tag or release.
+          # 验证模式构建工作流提交，不允许创建标签或发行版本。
+          echo "verify_only=$VERIFY_ONLY" >> "$GITHUB_OUTPUT"
+          if [[ "$VERIFY_ONLY" == true ]]; then
+            [[ "$EVENT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+            [[ -z "$EVENT_COMMIT_INPUT" || "$EVENT_COMMIT_INPUT" == "$EVENT_COMMIT" ]]
+            echo "tag=$EVENT_TAG" >> "$GITHUB_OUTPUT"
+            echo "commit=$EVENT_COMMIT" >> "$GITHUB_OUTPUT"
+            echo 'tag_exists=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Resolve annotated tags to their peeled commit and lightweight tags to their direct commit.
           # 将附注标签解析到剥离后的提交，并将轻量标签解析到其直接提交。
@@ -143,7 +163,11 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     needs: validate
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.goos == 'windows' && 'windows-2025' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    concurrency:
+      group: release-build-${{ matrix.platform }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -244,6 +268,20 @@ jobs:
                 raise SystemExit("cross-target binary does not contain the linked release tag")
             PY
 
+      - name: Install pinned SimplySign Desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/sign_release.ps1 -Phase Install -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence"
+
+      - name: Sign and verify the Windows manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CERTUM_TOTP_EMAIL: ${{ secrets.CERTUM_TOTP_EMAIL }}
+          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
+          RELEASE_INPUT: ${{ matrix.input }}
+        run: ./scripts/sign_release.ps1 -Phase Sign -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence" -Files (Join-Path $env:RUNNER_TEMP $env:RELEASE_INPUT)
+
       - name: Upload one manager executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -257,7 +295,7 @@ jobs:
     needs:
       - validate
       - build
-    runs-on: ubuntu-24.04
+    runs-on: windows-2025
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -285,6 +323,12 @@ jobs:
             --tag "$RELEASE_TAG" \
             --commit "$RELEASE_COMMIT"
 
+      - name: Recheck the packaged Windows signature without cloud credentials
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: ./scripts/sign_release.ps1 -Phase Verify -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence" -Files "$env:RUNNER_TEMP/vmmm-release/vmmm-$env:RELEASE_TAG-windows-x64.exe"
+
       - name: Upload unsigned release directory for signing
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -299,6 +343,8 @@ jobs:
       - validate
       - package
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       # This public key is also embedded in the manager trust store.
@@ -325,6 +371,14 @@ jobs:
         with:
           name: vmmm-release-unsigned
           path: ${{ runner.temp }}/vmmm-release
+
+      - name: Sign final Linux executables with the pinned OpenPGP key
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: python scripts/release_gpg.py sign "$RUNNER_TEMP/vmmm-release/vmmm-$RELEASE_TAG-linux-x64" "$RUNNER_TEMP/vmmm-release/vmmm-$RELEASE_TAG-linux-arm64"
 
       - name: Sign manifest from GitHub secret and verify locally
         shell: bash
@@ -386,7 +440,16 @@ jobs:
             --manifest "$RUNNER_TEMP/vmmm-release/manifest.json" \
             --signature "$RUNNER_TEMP/vmmm-release/manifest.sig"
 
+      - name: Upload verified production assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vmmm-release-verified
+          path: ${{ runner.temp }}/vmmm-release/*
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Bind and verify release tag identity
+        if: needs.validate.outputs.verify_only != 'true'
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
@@ -470,6 +533,7 @@ jobs:
           fi
 
       - name: Create draft release and upload only manager assets
+        if: needs.validate.outputs.verify_only != 'true'
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
@@ -478,7 +542,7 @@ jobs:
           cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
           This release is intentionally created as a draft.
 
-          The manager assets are signed with the VMMM Ed25519 release key and were verified after upload. Windows Authenticode signing remains reserved until the Certum certificate is available; this workflow never treats an unsigned Windows binary as a published release.
+          Windows binaries carry verified Certum Authenticode signatures and RFC 3161 timestamps. Linux binaries have detached OpenPGP signatures. The five-platform manifest is signed with the VMMM Ed25519 release key. macOS binaries are not code-signed.
           EOF
           gh release create "$RELEASE_TAG" \
             --draft \
@@ -488,6 +552,7 @@ jobs:
             "$RUNNER_TEMP/vmmm-release"/*
 
       - name: Download the draft again and verify every uploaded asset
+        if: needs.validate.outputs.verify_only != 'true'
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
@@ -504,7 +569,7 @@ jobs:
           release_dir = Path(os.environ["RUNNER_TEMP"]) / "vmmm-release"
           manifest = validate_manifest(json.loads((release_dir / MANIFEST_NAME).read_text(encoding="utf-8")))
           required = {MANIFEST_NAME, SIGNATURE_NAME} | {entry["filename"] for entry in manifest["artifacts"]}
-          expected = required | BOOTSTRAP_NAMES
+          expected = required | BOOTSTRAP_NAMES | {entry["filename"] + ".asc" for entry in manifest["artifacts"] if entry["platform"].startswith("linux-")}
           release_info = json.loads((Path(os.environ["RUNNER_TEMP"]) / "release-assets.json").read_text(encoding="utf-8"))
           actual = {asset["name"] for asset in release_info["assets"]}
           if actual != expected:
@@ -524,10 +589,9 @@ jobs:
           cmp --silent "$RUNNER_TEMP/vmmm-release/install.ps1" "$verify_dir/install.ps1"
           cmp --silent "$RUNNER_TEMP/vmmm-release/install.sh" "$verify_dir/install.sh"
           python scripts/package_release.py verify --release-dir "$verify_dir"
+          python scripts/release_gpg.py verify "$verify_dir/vmmm-$RELEASE_TAG-linux-x64" "$verify_dir/vmmm-$RELEASE_TAG-linux-arm64"
+          diff -r "$RUNNER_TEMP/vmmm-release" "$verify_dir"
           VMMM_RELEASE_ED25519_PUBLIC_KEY="$VMMM_TRUSTED_ED25519_PUBLIC_KEY" \
             go run ./scripts/sign_manifest.go verify \
             --manifest "$verify_dir/manifest.json" \
             --signature "$verify_dir/manifest.sig"
-
-      # Authenticode integration is intentionally reserved for the Certum certificate.
-      # Authenticode 集成刻意保留到 Certum 证书到位之后。

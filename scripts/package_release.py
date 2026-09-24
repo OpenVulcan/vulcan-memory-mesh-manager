@@ -296,7 +296,11 @@ def verify_release(output_dir: Path, manifest_path: Path | None = None) -> None:
     _regular_file(manifest_path, "manifest")
     value = validate_manifest(_load_json(manifest_path))
     required = {MANIFEST_NAME, SIGNATURE_NAME} | {entry["filename"] for entry in value["artifacts"]}
-    allowed = required | BOOTSTRAP_NAMES
+    # Detached Linux signatures are verified with the committed OpenPGP trust root.
+    # Linux 分离式签名使用仓库固定的 OpenPGP 信任根另行验证。
+    allowed = required | BOOTSTRAP_NAMES | {
+        entry["filename"] + ".asc" for entry in value["artifacts"] if entry["platform"].startswith("linux-")
+    }
     actual = {entry.name for entry in output_dir.iterdir() if entry.is_file() or entry.is_symlink()}
     _reject_runtime_files(actual)
     unexpected = sorted(actual - allowed)
