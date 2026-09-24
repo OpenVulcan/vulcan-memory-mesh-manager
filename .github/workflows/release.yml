@@ -62,7 +62,7 @@ jobs:
           # 验证模式构建工作流提交，不允许创建标签或发行版本。
           echo "verify_only=$VERIFY_ONLY" >> "$GITHUB_OUTPUT"
           if [[ "$VERIFY_ONLY" == true ]]; then
-            [[ "$EVENT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+            [[ "$EVENT_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
             [[ -z "$EVENT_COMMIT_INPUT" || "$EVENT_COMMIT_INPUT" == "$EVENT_COMMIT" ]]
             echo "tag=$EVENT_TAG" >> "$GITHUB_OUTPUT"
             echo "commit=$EVENT_COMMIT" >> "$GITHUB_OUTPUT"

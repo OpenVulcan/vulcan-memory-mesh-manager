@@ -8,6 +8,7 @@ import unittest
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -77,6 +78,26 @@ class ReleaseWorkflowIdentityTests(unittest.TestCase):
         script = "\n".join(line[10:] for line in WORKFLOW_TEXT[start:end].splitlines())
         checked = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
         self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "requires native Bash")
+    def test_verification_mode_rejects_noncanonical_versions(self) -> None:
+        """Execute verification-mode resolution without credentials, tags, or remote mutation.
+        在没有凭据、标签和远端修改的情况下，实际运行验证模式的身份解析。
+        """
+        start = WORKFLOW_TEXT.index("      - name: Resolve immutable release identity")
+        start = WORKFLOW_TEXT.index("        run: |\n", start) + len("        run: |\n")
+        end = WORKFLOW_TEXT.index("\n  build:", start)
+        script = "\n".join(line[10:] for line in WORKFLOW_TEXT[start:end].splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            for tag, expected in (("v0.1.0", 0), ("v0.1.0-rc.1", 0), ("v00.1.0", 1), ("v0.1.0-..", 1)):
+                output.write_text("", encoding="utf-8")
+                env = dict(os.environ, VERIFY_ONLY="true", EVENT_TAG=tag, EVENT_COMMIT="a" * 40,
+                           EVENT_COMMIT_INPUT="", GITHUB_OUTPUT=str(output))
+                checked = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+                with self.subTest(tag=tag):
+                    self.assertEqual(checked.returncode, expected, checked.stderr)
+                    self.assertEqual("commit=" in output.read_text(), expected == 0)
 
     def test_lightweight_tag_uses_direct_commit(self) -> None:
         """A lightweight tag has only its direct commit reference.
