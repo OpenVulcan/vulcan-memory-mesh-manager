@@ -2,7 +2,7 @@
 
 `vmmm` 是 VulcanMemoryMesh OSS 本地版的独立安装器与管理器。它是单文件 Go 程序，与 VMM 分开构建、签名和发布。首次打开 TUI 时，管理器先下载并验证 VMM 完整包，再收集配置，使用包内 `vmm-local config validate` 检查候选配置并提交安装。
 
-**发行状态：**程序和引导脚本模板已实现，正式发行流程已接入 Certum Windows 云签名与 Linux GPG 签名，目前尚未公开正式 Release。仓库中的 `scripts/install.sh`、`scripts/install.ps1` 含版本和 SHA-256 占位符，直接运行会拒绝；发行流程按最终签名产物生成实际引导脚本，并创建和回验 Draft Release。验证模式只保存 Actions 产物，详见[正式发行签名](docs/release-signing_CN.md)。
+**发行方式：**独立管理器首次发行版本为 `v0.1.0`，使用 Certum Windows 云签名与 Linux GPG 签名。仓库中的 `scripts/install.sh`、`scripts/install.ps1` 是含版本和 SHA-256 占位符的模板，直接运行会拒绝；请使用 [正式 Release](https://github.com/OpenVulcan/vulcan-memory-mesh-manager/releases) 中根据最终签名产物生成的实际引导脚本。工作流先创建并回验 Draft Release，再公开版本；验证模式仅保存 Actions 产物，详见[正式发行签名](docs/release-signing_CN.md)。VMM 运行时请选择 `v0.1.1` 或后续完整包；旧 VMM `v0.1.0` 不具备完整安装契约。
 
 引导脚本仅下载固定版本的管理器程序，下载流设有 512 MiB 上限和十分钟总时限，超过上限、超时或 SHA-256 不匹配都会终止，不会执行文件。POSIX 脚本另外限制下载子进程可写文件大小；旧版 curl 对未声明长度的响应可能不会严格执行 `--max-filesize`，因此仍有子进程文件上限和下载后字节数复核。`install.ps1` 模板与正式生成物均使用带 BOM 的 UTF-8，以兼容 Windows PowerShell 5.1。此限制只约束首次引导下载，不改变管理器对 VMM 完整安装包的独立签名和长度校验。
 
