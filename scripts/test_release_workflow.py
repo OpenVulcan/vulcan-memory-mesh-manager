@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import unittest
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -62,6 +65,18 @@ class ReleaseWorkflowIdentityTests(unittest.TestCase):
         output = f"{tag_object}\trefs/tags/{tag}\n{commit}\trefs/tags/{tag}^{{}}\n"
         self.assertEqual(resolve_peeled_commit(output, tag), commit)
         self.assertEqual(select_existing_tag_commit(output, tag), commit)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "requires native Bash")
+    def test_version_check_bash_syntax(self) -> None:
+        """Parse the actual version-check script to reject broken heredocs and unclosed conditionals.
+        解析真实版本检查脚本，拒绝错误的内嵌文本边界和未闭合条件分支。
+        """
+        start = WORKFLOW_TEXT.index("      - name: Verify embedded release identity")
+        start = WORKFLOW_TEXT.index("        run: |\n", start) + len("        run: |\n")
+        end = WORKFLOW_TEXT.index("      - name:", start)
+        script = "\n".join(line[10:] for line in WORKFLOW_TEXT[start:end].splitlines())
+        checked = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_lightweight_tag_uses_direct_commit(self) -> None:
         """A lightweight tag has only its direct commit reference.
